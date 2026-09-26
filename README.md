@@ -25,12 +25,12 @@ See the [Screenshots Gallery](docs/screenshots.md) for a closer look.
 
 ## Requirements
 
-You do not need to be a Linux expert. The installer checks the basics and prepares Docker on supported Linux systems.
+You do not need to be a Linux expert. The installer checks the basics and prepares the container engine on supported Linux systems.
 
 | What&nbsp;You&nbsp;Need | Recommendation |
 |---|---|
 | Server | A fresh 64-bit Ubuntu server is the recommended and easiest option. Other Linux distributions, Docker Desktop on Windows/WSL2, and virtual machines are also supported. |
-| Docker | The installer prepares Docker on supported Linux systems if it is not already available. |
+| Container engine | Docker or Podman. The installer prepares whichever is already on the host, and installs Docker if neither is. See [Container engines](docs/architecture/CONTAINER-ENGINES.md). |
 | CPU | AVX/AVX2 support |
 | Memory | Start with 20 GB RAM; use 30–40 GB or more for additional always-on maps |
 | Storage | 200 GB or more |
@@ -77,6 +77,8 @@ sh -c 'set -eu; echo "==> Setting up Dune Docker Console..."; if command -v curl
 The installer downloads the latest release, starts the Web UI, and tells you which address to open. Complete the remaining setup in your browser.
 
 On Alpine Linux, the installer uses the distribution's Docker and Docker Compose packages and starts Docker through OpenRC. If the community repository is unavailable, the installer asks before changing repository configuration.
+
+On a host that already runs Podman, the installer keeps Podman and publishes its Docker-compatible API at `/var/run/docker.sock`, then installs the real Docker CLI and Compose v2 plugin to drive it. Podman needs systemd, and access to the engine socket goes through a `podman` group that is root-equivalent, exactly as the `docker` group is. [Container engines](docs/architecture/CONTAINER-ENGINES.md) covers what differs and what is not yet supported.
 
 ## Public Server Directory
 

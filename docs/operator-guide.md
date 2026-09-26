@@ -1,6 +1,6 @@
 # Operator Guide
 
-**Status:** Current | **Last Updated:** August 2026
+**Status:** Current | **Last Updated:** September 2026
 
 This is the end-user (server operator) guide to running a Dune: Awakening
 server with this project. It assumes you have already completed
@@ -17,6 +17,31 @@ For an engineering-level architecture reference (how the pieces fit
 together in code), see
 [`docs/architecture/SYSTEM-OVERVIEW.md`](architecture/SYSTEM-OVERVIEW.md)
 instead of this guide.
+
+### If your server runs Podman
+
+The stack runs on Docker or on Podman, and the installer picks up whichever
+is already on the host. Podman hosts get the real Docker CLI and Compose v2
+plugin driving Podman's Docker-compatible API socket, so every `dune` and
+`docker` command in this guide and in the linked pages is spelled and typed
+exactly the same. Four things an operator will notice anyway:
+
+- **Engine access is the `podman` group, not the `docker` group.** It is
+  root-equivalent either way; only the name changes.
+- **The Console's CPU column reads `N/A`.** Podman's compatibility API zeroes
+  the baseline every `docker stats` call, so the percentage it would report is
+  not a measurement. Memory, network and block I/O are correct. Use
+  `podman stats` on the host for live CPU.
+- **Container log rotation keeps one file, not several.** Podman honours a
+  size cap but has no `max-file` equivalent, so logs are truncated rather than
+  rolled.
+- **Containers come back after a reboot through `podman-restart.service`**,
+  which must be enabled. `dune doctor` checks it, along with the rest of the
+  Podman host prerequisites.
+
+[`docs/architecture/CONTAINER-ENGINES.md`](architecture/CONTAINER-ENGINES.md)
+has the full list of differences, the host package and socket requirements,
+and the gaps that are not supported yet.
 
 ---
 
@@ -358,4 +383,5 @@ manually editing `.env` port variables without reading that document first
 ## Related documents
 
 - [`docs/architecture/SYSTEM-OVERVIEW.md`](architecture/SYSTEM-OVERVIEW.md) — engineering architecture reference.
+- [`docs/architecture/CONTAINER-ENGINES.md`](architecture/CONTAINER-ENGINES.md) — Docker and Podman support, host prerequisites, known gaps.
 - [`docs/README.md`](README.md) — full documentation index.

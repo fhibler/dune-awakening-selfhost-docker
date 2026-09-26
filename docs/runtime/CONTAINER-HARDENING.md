@@ -1,6 +1,6 @@
 ## Container Hardening — Change Summary
 
-**Status:** Current | **Last Updated:** July 2026
+**Status:** Current | **Last Updated:** September 2026
 
 ### Overview
 
@@ -41,7 +41,10 @@ If the installation is intentionally owned and operated by root, the detected
 UID/GID is `0:0` and Compose keeps the console running as root so existing
 installations continue to work. Because the console mounts the Docker socket,
 administrators must treat it as a trusted, root-equivalent management service
-regardless of its process UID.
+regardless of its process UID. This holds on Podman as well: the console mounts
+Podman's Docker-compatible API socket at the same path, and membership in the
+`podman` group is root-equivalent exactly as the `docker` group is. See
+[`docs/architecture/CONTAINER-ENGINES.md`](../architecture/CONTAINER-ENGINES.md).
 
 **Why**: Docker's own best practices state: *"Avoid running applications as
 root. Even if the container is designed to be run as root, consider adding
@@ -90,12 +93,12 @@ UID/GID `0:0` and are not rejected solely because they are owned by root.
 #### 4. Orchestrator runs as root briefly — legitimate need
 
 **What**: Orchestrator entrypoint runs as root, repairs volume ownership,
-configures Docker socket group access, then drops to `dune` via `runuser`.
+configures engine socket group access, then drops to `dune` via `setpriv`.
 
-**Why**: The orchestrator manages Docker containers (needs socket access)
+**Why**: The orchestrator manages containers (needs socket access)
 and game server volumes (needs write access). These operations require root.
-The orchestrator entrypoint uses the privilege drop chain: `runuser` →
-`gosu` → `setpriv` → `su` — each preserving argument boundaries.
+The orchestrator entrypoint uses the privilege drop chain: `setpriv` →
+`runuser` → `gosu` → `su` — each preserving argument boundaries.
 
 **Sources**:
 - [Docker socket security](https://docs.docker.com/engine/security/#docker-daemon-attack-surface): "Giving someone access to the Docker socket is equivalent to giving them root"
@@ -110,6 +113,38 @@ preserves them via proper shell argument forwarding.
 **Sources**:
 - [Shell parameter expansion](https://www.gnu.org/software/bash/manual/html_node/Special-Parameters.html): `$*` vs `$@` — `$@` preserves argument boundaries
 - [runuser man page](https://man7.org/linux/man-pages/man1/runuser.1.html): Designed to replace `su` for service management
+
+#### 6. The privilege drop carries the socket's group explicitly
+
+**What**: The entrypoint computes the supplementary group set itself — dune's
+own memberships, plus every non-zero group inherited from the container's
+process, plus `DOCKER_SOCKET_GID` — and hands it to `setpriv --groups`. Group 0
+is carried only when the socket's GID actually is 0.
+
+**Why**: `group_add` in `docker-compose.yml` delivers the socket's group to the
+entrypoint *process*, not to `/etc/group`. `runuser`, `su` and `gosu` all call
+`initgroups()`, which replaces the process group set with dune's `/etc/group`
+memberships and silently discards the inherited one. On Docker that is masked:
+the socket's GID is non-zero, so the entrypoint recreates it as a real group
+and dune genuinely belongs to it. Rootful Podman's socket is `root:root 0660`,
+no named group can be created for GID 0, and the orchestrator would drop to a
+user that cannot open the one socket its entire job is to drive — every engine
+call failing with `EACCES` and nothing saying why.
+
+`setpriv` leads the chain because it is the only one of the four that accepts
+raw numeric GIDs: `runuser -G` rejects a GID with no `/etc/group` entry, which
+is exactly what an inherited `group_add` value is. The three fallbacks cannot
+carry an inherited group and remain only for an image without util-linux.
+`setpriv` also leaves the environment untouched, so `HOME`, `USER` and
+`LOGNAME` are set explicitly to the values `runuser` would have written —
+dune's SteamCMD tree lives under its `HOME`.
+
+Covered by `tests/orchestrator-privilege-drop-test.sh`, which runs the shipped
+entrypoint's drop against both a non-zero and a zero socket GID.
+
+**Sources**:
+- [setpriv man page](https://man7.org/linux/man-pages/man1/setpriv.1.html): `--groups` takes numeric GIDs
+- [initgroups(3)](https://man7.org/linux/man-pages/man3/initgroups.3.html): replaces the supplementary group list from `/etc/group`
 
 ---
 

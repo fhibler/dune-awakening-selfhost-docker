@@ -1,6 +1,6 @@
 # System Architecture Overview
 
-**Status:** Current | **Last Updated:** August 2026
+**Status:** Current | **Last Updated:** September 2026
 
 This document is the whole-system engineering reference for
 `dune-awakening-selfhost-docker`. It exists because the repository's
@@ -28,7 +28,7 @@ by shell scripts under `runtime/scripts/`:
 
 ```
                     ┌─────────────────────────────┐
-                    │   Host (Linux, Docker)       │
+                    │  Host (Linux, Docker/Podman) │
                     │                               │
   operator ──SSH──► │  runtime/scripts/dune  (CLI) │
                     │        │                      │
@@ -109,6 +109,23 @@ map partitions (via `dune spawn` / `dune despawn`). An Autoscaler process
 (`runtime/scripts/autoscaler.sh`) runs continuously to spawn/despawn
 dynamic maps based on demand signals it tracks under
 `runtime/generated/autoscaler-*`.
+
+### 1.6 The container engine (Docker or Podman)
+
+Everything above runs on either engine. Every call site in the repository is
+spelled `docker`; a Podman host satisfies them with the real Docker CLI and the
+real Compose v2 plugin pointed at Podman's Docker-compatible API socket, so
+there is no second invocation path and no `$ENGINE` variable in front of the
+call sites.
+
+The places where the two engines genuinely behave differently — restart policy,
+SELinux mount labels, log options, the name of the systemd unit to order
+against, image-reference spelling, build-cache pruning — are described in
+exactly one file, `runtime/scripts/lib/engine.sh`, which every other script
+reads instead of branching on the engine itself.
+[`CONTAINER-ENGINES.md`](CONTAINER-ENGINES.md) is the reference for that seam,
+for what an operator needs on the host, and for the decision record on why the
+stack does not share one Podman pod.
 
 ---
 
@@ -397,4 +414,5 @@ section for which is which.
 - [`docs/console-iam.md`](../console-iam.md) — authorization pipeline detail.
 - [`docs/console/API-REFERENCE.md`](../console/API-REFERENCE.md) — full HTTP endpoint reference.
 - [`docs/runtime/MULTI-SERVER-SINGLE-PUBLIC-IP.md`](../runtime/MULTI-SERVER-SINGLE-PUBLIC-IP.md) — running multiple battlegroups behind one public IPv4.
+- [`CONTAINER-ENGINES.md`](CONTAINER-ENGINES.md) — Docker and Podman: the engine seam, host prerequisites, and the pod decision record.
 - [`docs/operator-guide.md`](../operator-guide.md) — end-user/operator walkthrough.

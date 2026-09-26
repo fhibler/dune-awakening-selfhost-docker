@@ -823,9 +823,9 @@ persist_web_port() {
 # same silent failure with the two engines swapped. persist_env_value()
 # replaces an existing key rather than appending a second one.
 #
-# DUNE_ENGINE_SOCKET is deliberately not persisted. Nothing interpolates it
-# (the compose files name /var/run/docker.sock literally, which is the path
-# this installer guarantees), and writing it would pin whatever the socket
+# DUNE_ENGINE_SOCKET is deliberately not persisted. The one place Compose
+# interpolates it already defaults to /var/run/docker.sock, which is the path
+# this installer guarantees, and writing it would pin whatever the socket
 # happened to be on the day of the install -- outliving the drop-in that
 # moved it, which is the one case a stale value would actually hurt.
 persist_engine_env() {
@@ -1021,6 +1021,12 @@ show_finish() {
 
   say "$APP_NAME is ready."
   echo
+  if [ "$DUNE_ENGINE_KIND" = "podman" ]; then
+    echo "Containers run on Podman. The Docker CLI and Compose plugin installed here"
+    echo "drive Podman's Docker-compatible API socket at /var/run/docker.sock, so every"
+    echo "'docker' command in the documentation works as written."
+    echo
+  fi
   echo "Open the Web UI in your browser:"
   if [ -n "$finish_public_ip" ] && [ "$finish_public_ip" != "$finish_host_ip" ]; then
     echo "  Remote / public access: http://$finish_public_ip:$WEB_PORT"
@@ -1035,7 +1041,7 @@ show_finish() {
   echo "If this optional UDP range remains closed, DuneDocker.app automatically uses its ping relay instead."
   if [ "$DOCKER_GROUP_UPDATED" = "1" ]; then
     echo
-    echo "Container engine access is ready. Setup can continue."
+    echo "Container engine access is ready through the $ENGINE_SOCKET_GROUP group. Setup can continue."
   fi
   echo
   echo "Your first admin password was generated automatically."
