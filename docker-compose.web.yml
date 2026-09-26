@@ -33,6 +33,11 @@ services:
       DUNE_DOCKER_DIR: /repo
       DUNE_CONTAINER_REPO_ROOT: /repo
       DUNE_HOST_REPO_ROOT: "${DUNE_HOST_REPO_ROOT:-${PWD}}"
+      # A host path, like DUNE_HOST_REPO_ROOT. The self-update helper is a
+      # sibling container created on the host, so it must bind the socket where
+      # the host publishes it -- which is not resolvable from in here, where the
+      # socket is always mounted at the Docker default.
+      DUNE_ENGINE_SOCKET: "${DUNE_ENGINE_SOCKET:-/var/run/docker.sock}"
       # Make RedBlink dune scripts target the main Dune stack, not this web-only compose project.
       COMPOSE_PROJECT_NAME: "${DUNE_COMPOSE_PROJECT_NAME:-dune-awakening-selfhost-docker}"
       DUNE_COMPOSE_PROJECT_NAME: "${DUNE_COMPOSE_PROJECT_NAME:-dune-awakening-selfhost-docker}"

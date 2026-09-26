@@ -56,6 +56,87 @@ docker_size_bytes() {
   '
 }
 
+# Podman's half of the host-tools check. Three things have to hold here that
+# come free with Docker Engine: the Docker CLI has to be installed at all to
+# reach the compat socket, `docker compose` has to resolve to the real
+# Compose v2 plugin, and catatonit has to exist for the Console's init process.
+check_podman_host_tools() {
+  local compose_version
+
+  if command -v docker >/dev/null 2>&1; then
+    ok "Docker CLI found (this host runs Podman behind it)"
+  else
+    fail_msg "Docker CLI not found"
+    echo "     Podman hosts still need it to speak Docker's API: sudo dnf install -y podman-docker"
+  fi
+
+  if docker info >/dev/null 2>&1; then
+    ok "Podman's Docker-compatible API reachable at $DUNE_ENGINE_SOCKET"
+  else
+    fail_msg "Podman's Docker-compatible API is not reachable at $DUNE_ENGINE_SOCKET"
+    echo "     Enable the socket: sudo systemctl enable --now podman.socket"
+    echo "     Then grant your user access: sudo usermod -aG podman \$USER && newgrp podman"
+  fi
+
+  # podman-compose is a different program that happens to answer to the same
+  # words. It labels containers io.podman.compose.*, and every service lookup
+  # in this repo resolves a container by its com.docker.compose.* labels, so
+  # it would not fail -- it would silently find nothing, everywhere.
+  compose_version="$(docker compose version 2>/dev/null || true)"
+  if grep -qiE '^Docker Compose version' <<<"$compose_version"; then
+    ok "Docker Compose v2 available"
+  elif [ -n "$compose_version" ]; then
+    fail_msg "docker compose resolves to something other than the Compose v2 plugin: ${compose_version%%$'\n'*}"
+    echo "     This stack finds its containers by com.docker.compose.* labels, which podman-compose does not write."
+    echo "     Install the real plugin: sudo dnf install -y docker-compose-plugin"
+  else
+    fail_msg "Docker Compose is not available"
+    echo "     Install Docker Compose v2."
+  fi
+
+  # docker-compose.web.yml sets init: true. Docker ships its init binary inside
+  # the engine package; Podman execs /usr/libexec/podman/catatonit from a
+  # package that is only a weak dependency, and without it container creation
+  # fails with an error that reads nothing like a missing package.
+  if [ -x /usr/libexec/podman/catatonit ] || command -v catatonit >/dev/null 2>&1; then
+    ok "catatonit available for the Console's init process"
+  else
+    fail_msg "catatonit is not installed"
+    echo "     The Console container sets init: true and Podman cannot create it without catatonit: sudo dnf install -y catatonit"
+  fi
+}
+
+# The stack calls the Docker CLI on both engines, so the probes are the same
+# either way -- but the remediation is not, and this is the text an operator
+# reads exactly when they are already stuck. The Docker branch is untouched so
+# doctor's output on a Docker host does not move.
+check_host_tools() {
+  if [ "$DUNE_ENGINE_KIND" = "podman" ]; then
+    check_podman_host_tools
+    return
+  fi
+
+  if command -v docker >/dev/null 2>&1; then
+    ok "Docker command found"
+    if docker info >/dev/null 2>&1; then
+      ok "Docker daemon reachable"
+    else
+      fail_msg "Docker daemon is not reachable"
+      echo "     Start Docker and make sure your user can access /var/run/docker.sock."
+    fi
+  else
+    fail_msg "Docker command not found"
+    echo "     Install Docker Engine."
+  fi
+
+  if docker compose version >/dev/null 2>&1; then
+    ok "Docker Compose available"
+  else
+    fail_msg "Docker Compose is not available"
+    echo "     Install Docker Compose v2."
+  fi
+}
+
 check_docker_storage() {
   local rows obsolete_output obsolete_count=0 cache_reclaim="0B" cache_bytes=0
   rows="$(docker system df --format '{{.Type}}|{{.Reclaimable}}' 2>/dev/null || true)"
@@ -63,10 +144,7 @@ check_docker_storage() {
 
   obsolete_output="$(runtime/scripts/storage.sh cleanup --dry-run 2>/dev/null || true)"
   obsolete_count="$(grep -c '^WOULD REMOVE ' <<<"$obsolete_output" || true)"
-  cache_reclaim="$(awk -F'|' '$1 == "Build Cache" { print $2; exit }' <<<"$rows")"
-  cache_bytes="$(docker_size_bytes <<<"${cache_reclaim:-0B}")"
   obsolete_count="${obsolete_count:-0}"
-  cache_bytes="${cache_bytes:-0}"
 
   if [ "$obsolete_count" -gt 0 ]; then
     warn_msg "Docker has ${obsolete_count} obsolete project-owned image(s) that can be cleaned"
@@ -74,6 +152,18 @@ check_docker_storage() {
   else
     ok "No obsolete project-owned Docker images found"
   fi
+
+  # Podman's `system df` has Images, Containers and Local Volumes but no Build
+  # Cache row at all, so the awk below would read empty, default to 0B, and
+  # report a reassuring figure about a cache it never inspected. An engine
+  # whose build cache cannot be pruned from here has nothing to say about it.
+  if [ "$DUNE_ENGINE_SUPPORTS_BUILDER_PRUNE" != "1" ]; then
+    return
+  fi
+
+  cache_reclaim="$(awk -F'|' '$1 == "Build Cache" { print $2; exit }' <<<"$rows")"
+  cache_bytes="$(docker_size_bytes <<<"${cache_reclaim:-0B}")"
+  cache_bytes="${cache_bytes:-0}"
   if [ "$cache_bytes" -ge 10000000000 ]; then
     warn_msg "Docker has ${cache_reclaim} of reclaimable build cache"
     echo "     On a dedicated host: dune storage cleanup --build-cache"
@@ -159,6 +249,87 @@ check_game_container_pinning() {
 
   if [ "$found" -eq 0 ]; then
     ok "No active game container CPU pinning detected"
+  fi
+}
+
+# Twenty call sites address a peer by container name: both RabbitMQ brokers
+# authenticate every client against http://dune-text-router:5059, and the
+# gateway, director and text router all reach the database as dune-postgres.
+# Docker's embedded resolver is unconditional on a user-defined bridge;
+# Podman delegates to netavark plus aardvark-dns, a weak dependency gated per
+# network by a flag the Docker compat API cannot set. Either way the failure
+# is an NXDOMAIN at runtime, long after the network was created without
+# complaint, so the only honest check is to resolve the names from the bridge.
+check_bridge_dns() {
+  local image="${DUNE_ENGINE_IMAGE_PREFIX}dune-orchestrator:dev"
+  local resolved name missing=0
+
+  command -v docker >/dev/null 2>&1 || return 0
+  if ! docker network inspect dune-net >/dev/null 2>&1; then
+    warn_msg "Bridge name resolution not checked: the dune-net network does not exist yet"
+    echo "     Try: dune start"
+    return
+  fi
+  if ! docker image inspect "$image" >/dev/null 2>&1; then
+    warn_msg "Bridge name resolution not checked: $image has not been built yet"
+    echo "     Try: dune start"
+    return
+  fi
+  for name in dune-postgres dune-text-router; do
+    if ! is_running "$name"; then
+      warn_msg "Bridge name resolution not checked: $name is not running, so it has no name to resolve"
+      return
+    fi
+  done
+
+  resolved="$(docker run --rm --network dune-net --entrypoint getent "$image" \
+    hosts dune-postgres dune-text-router 2>/dev/null || true)"
+  for name in dune-postgres dune-text-router; do
+    if ! grep -qw -- "$name" <<<"$resolved"; then
+      fail_msg "Bridge name resolution failed: $name does not resolve from dune-net"
+      missing=1
+    fi
+  done
+  if [ "$missing" -eq 0 ]; then
+    ok "Bridge name resolution works for dune-postgres and dune-text-router"
+    return
+  fi
+  echo "     Every RabbitMQ client is authorised through http://dune-text-router:5059, so no player can connect while this fails."
+  if [ "$DUNE_ENGINE_KIND" = "podman" ]; then
+    echo "     Install the DNS backend, then recreate the bridge: sudo dnf install -y netavark aardvark-dns"
+    echo "     Then: dune stop && docker network rm dune-net && dune start"
+  fi
+}
+
+# ping-diagnostics.sh and autoscaler.sh both read a game server's port
+# arguments out of the same container, and both read them from .Config.Cmd.
+# Docker fills .Path and .Args as well and all three agree; Podman's compat
+# inspect derives them from the entrypoint differently and can leave .Args
+# empty. Assert the field the two readers actually use carries the arguments,
+# so an engine that files them elsewhere surfaces here rather than as two
+# tools quietly disagreeing about one server.
+check_game_container_argv() {
+  local container cmd args
+
+  command -v docker >/dev/null 2>&1 || return 0
+  container="$(docker ps --format '{{.Names}}' 2>/dev/null \
+    | grep -E '^dune-server-' | grep -vx 'dune-server-gateway' | head -n1 || true)"
+  if [ -z "$container" ]; then
+    info_msg "No game server container is running; container argument reporting was not checked"
+    return
+  fi
+
+  cmd="$(docker inspect "$container" --format '{{range .Config.Cmd}}{{println .}}{{end}}' 2>/dev/null || true)"
+  if grep -q -- '-ini:engine:' <<<"$cmd"; then
+    ok "Game server arguments are readable from .Config.Cmd ($container)"
+    return
+  fi
+
+  fail_msg "Game server arguments are not readable from .Config.Cmd on $container"
+  echo "     The autoscaler and 'dune ping' both read the port arguments from this field, so both will misreport this server."
+  args="$(docker inspect "$container" --format '{{range .Args}}{{println .}}{{end}}' 2>/dev/null || true)"
+  if grep -q -- '-ini:engine:' <<<"$args"; then
+    echo "     This engine reports them under .Args instead."
   fi
 }
 
@@ -340,29 +511,69 @@ EOF
   fi
 }
 
+# Every generated unit orders itself against the container engine's own
+# systemd unit, and shutdown-protection.service depends on that ordering for
+# the whole of its purpose: DefaultDependencies=no plus After=<engine> plus
+# Before=shutdown.target is the only reason its ExecStop gets to stop the game
+# gracefully before the engine tears the containers down. systemd treats
+# After= on a unit that does not exist as a silent no-op, so a unit generated
+# against the wrong engine keeps loading, keeps running, and quietly races
+# teardown instead. Nothing logs it, which is why doctor has to look.
+check_generated_unit_engine_ordering() {
+  local unit load_state after verify_output installed=0 misordered=0
+  local -a verify_units=()
+
+  command -v systemctl >/dev/null 2>&1 || return 0
+
+  while IFS= read -r unit; do
+    [ -n "$unit" ] || continue
+    load_state="$(systemctl show "$unit" --property=LoadState --value 2>/dev/null || true)"
+    { [ -n "$load_state" ] && [ "$load_state" != "not-found" ]; } || continue
+    installed=$((installed + 1))
+    verify_units+=("$unit")
+    after="$(systemctl show "$unit" --property=After --value 2>/dev/null || true)"
+    if ! tr ' ' '\n' <<<"$after" | grep -qxF "$DUNE_ENGINE_SYSTEMD_UNIT"; then
+      misordered=$((misordered + 1))
+      warn_msg "$unit does not order after $DUNE_ENGINE_SYSTEMD_UNIT"
+      echo "     It was generated for a different container engine; re-run the dune command that installed this schedule so the unit is rewritten."
+    fi
+  done <<'EOF'
+dune-awakening-auto-update.service
+dune-awakening-scheduled-restart.service
+dune-awakening-scheduled-restart-warning.service
+dune-awakening-ip-change-restart.service
+dune-awakening-db-backup.service
+dune-awakening-shutdown-protection.service
+EOF
+
+  if [ "$installed" -eq 0 ]; then
+    return 0
+  fi
+
+  load_state="$(systemctl show "$DUNE_ENGINE_SYSTEMD_UNIT" --property=LoadState --value 2>/dev/null || true)"
+  if [ -z "$load_state" ] || [ "$load_state" = "not-found" ]; then
+    warn_msg "Generated units order against $DUNE_ENGINE_SYSTEMD_UNIT, which this host does not have"
+    echo "     systemd ignores an ordering dependency on a missing unit without a word, so these units race container teardown on reboot."
+  elif [ "$misordered" -eq 0 ]; then
+    ok "All installed generated units order after $DUNE_ENGINE_SYSTEMD_UNIT"
+  fi
+
+  command -v systemd-analyze >/dev/null 2>&1 || return 0
+  # Only the "not found" lines. An unfiltered verify reports "no installation
+  # config" for nearly every unit on nearly every host, which would bury the
+  # one line that means an ordering dependency evaporated.
+  verify_output="$(systemd-analyze verify "${verify_units[@]}" 2>&1 | grep -i 'not found' || true)"
+  if [ -n "$verify_output" ]; then
+    warn_msg "systemd-analyze reports dependencies the generated units name but this host does not have"
+    sed 's/^/     /' <<<"$verify_output"
+  fi
+}
+
 echo "=== Dune doctor ==="
 echo
 
 echo "=== Host tools ==="
-if command -v docker >/dev/null 2>&1; then
-  ok "Docker command found"
-  if docker info >/dev/null 2>&1; then
-    ok "Docker daemon reachable"
-  else
-    fail_msg "Docker daemon is not reachable"
-    echo "     Start Docker and make sure your user can access /var/run/docker.sock."
-  fi
-else
-  fail_msg "Docker command not found"
-  echo "     Install Docker Engine."
-fi
-
-if docker compose version >/dev/null 2>&1; then
-  ok "Docker Compose available"
-else
-  fail_msg "Docker Compose is not available"
-  echo "     Install Docker Compose v2."
-fi
+check_host_tools
 
 echo
 echo "=== Docker storage ==="
@@ -388,6 +599,7 @@ fi
 echo
 echo "=== Host automation ==="
 check_project_systemd_timers
+check_generated_unit_engine_ordering
 
 echo
 echo "=== Containers ==="
@@ -408,6 +620,8 @@ do
     echo "     Try: dune start"
   fi
 done
+check_bridge_dns
+check_game_container_argv
 
 echo
 echo "=== Ports ==="

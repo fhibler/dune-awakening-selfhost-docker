@@ -117,6 +117,7 @@ jobs:
           dash -n install.sh
           docker run --rm -v "$PWD/install.sh:/install.sh:ro" alpine:3.22 /bin/ash -n /install.sh
           tests/install-docker-progress-test.sh
+          tests/install-podman-bootstrap-test.sh
       - name: Test partition combat-state resolver
         run: python3 runtime/scripts/test_partition_combat_state.py
       - name: Test UserEngine.ini comment placement
@@ -172,8 +173,22 @@ jobs:
         run: |
           runtime/tests/test-compose-project-name-portability.sh
           runtime/tests/test-compose-project-resolution.sh
-      - name: Test container-engine seam (Docker and Podman legs)
-        run: runtime/tests/test-engine-seam.sh
+      # Every one of these runs both engine legs against the real scripts, with
+      # a recording stub standing in for the engine. No runner has a Podman
+      # host, so this is the only place a Podman regression is caught.
+      - name: Test container-engine support (Docker and Podman legs)
+        run: |
+          python3 -c 'import yaml' 2>/dev/null || pip3 install --quiet pyyaml
+          runtime/tests/test-engine-seam.sh
+          runtime/tests/test-podman-engine-call-sites.sh
+          runtime/tests/test-podman-postgres-lifecycle.sh
+          tests/compose-engine-render-test.sh
+          tests/orchestrator-privilege-drop-test.sh
+          tests/systemd-unit-engine-ordering-test.sh
+          tests/doctor-engine-checks-test.sh
+          tests/storage-cleanup-podman-test.sh
+          tests/dune-compose-service-reuse-test.sh
+          tests/engine-host-facts-test.sh
       - name: Test age-based secrets library (AEAD primitive, shell seam, cross-language round-trip)
         run: |
           python3 runtime/scripts/lib/test_secrets_aead.py -v

@@ -4,6 +4,10 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 
 . runtime/scripts/compose-project.sh
+# The Console image is built here; the seam decides which builder Compose uses
+# and how the engine spells a locally built image.
+# shellcheck source=runtime/scripts/lib/engine.sh
+. runtime/scripts/lib/engine.sh
 MAIN_PROJECT_NAME="$(dune_resolve_compose_project_name "$(pwd -P)")"
 export DUNE_COMPOSE_PROJECT_NAME="$MAIN_PROJECT_NAME"
 dune_persist_compose_project_name "$(pwd -P)" "$MAIN_PROJECT_NAME"
@@ -78,10 +82,25 @@ persist_env_value() {
 }
 
 prepare_docker_socket_gid() {
+  # The literal path, on both engines: this GID has to match the socket the
+  # console container will have bind-mounted, and the compose files mount
+  # /var/run/docker.sock by name. On Podman that is the compat socket the
+  # podman.socket drop-in publishes.
   if [ -z "${DOCKER_SOCKET_GID:-}" ] && [ -S /var/run/docker.sock ] && command -v stat >/dev/null 2>&1; then
     DOCKER_SOCKET_GID="$(stat -c '%g' /var/run/docker.sock 2>/dev/null || true)"
   fi
   export DOCKER_SOCKET_GID="${DOCKER_SOCKET_GID:-0}"
+
+  # Podman's socket is group root until the drop-in gives it one, and a 0 here
+  # hands the console a socket its non-root user cannot open. Persisting that
+  # would make it permanent: the probe above is skipped whenever .env already
+  # supplies a value, so the wrong GID would survive the drop-in being fixed.
+  # Warn and leave .env alone instead, so the next run probes again.
+  if [ "$DUNE_ENGINE_KIND" = "podman" ] && [ "$DOCKER_SOCKET_GID" = "0" ]; then
+    echo "Warning: the Podman API socket at /var/run/docker.sock is group root, or is not there at all." >&2
+    echo "The Console cannot reach the engine until 'systemctl status podman.socket' is healthy." >&2
+    return 0
+  fi
   persist_env_value DOCKER_SOCKET_GID "$DOCKER_SOCKET_GID"
 }
 
@@ -108,7 +127,7 @@ restart_console() {
   prepare_host_user_ids
   export ADMIN_BIND_PORT="${ADMIN_WEB_PORT:-${ADMIN_BIND_PORT:-}}"
   mkdir -p runtime/generated
-  previous_image_id="$(docker image inspect --format '{{.Id}}' redblink-dune-docker-console:dev 2>/dev/null || true)"
+  previous_image_id="$(docker image inspect --format '{{.Id}}' "${DUNE_ENGINE_IMAGE_PREFIX}redblink-dune-docker-console:dev" 2>/dev/null || true)"
   echo "Rebuilding Dune Docker Console..."
   COMPOSE_PROJECT_NAME="$PROJECT_NAME" DUNE_COMPOSE_PROJECT_NAME="$MAIN_PROJECT_NAME" DUNE_HOST_REPO_ROOT="$HOST_ROOT" docker compose -f "$WEB_COMPOSE" build "$WEB_SERVICE"
   if [ -x runtime/scripts/start-coriolis-coordinator.sh ]; then
@@ -119,7 +138,7 @@ restart_console() {
   echo "Replacing Dune Docker Console container..."
   docker rm -f "$WEB_SERVICE" >/dev/null 2>&1 || true
   COMPOSE_PROJECT_NAME="$PROJECT_NAME" DUNE_COMPOSE_PROJECT_NAME="$MAIN_PROJECT_NAME" DUNE_HOST_REPO_ROOT="$HOST_ROOT" docker compose -f "$WEB_COMPOSE" up -d "$WEB_SERVICE"
-  current_image_id="$(docker image inspect --format '{{.Id}}' redblink-dune-docker-console:dev 2>/dev/null || true)"
+  current_image_id="$(docker image inspect --format '{{.Id}}' "${DUNE_ENGINE_IMAGE_PREFIX}redblink-dune-docker-console:dev" 2>/dev/null || true)"
   if [ -n "$previous_image_id" ] && [ "$previous_image_id" != "$current_image_id" ]; then
     docker image rm "$previous_image_id" >/dev/null 2>&1 || true
   fi

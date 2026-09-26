@@ -73,7 +73,7 @@ ensure_compose_file() {
 }
 
 ensure_network() {
-  docker network create dune-net >/dev/null 2>&1 || true
+  dune_engine_create_network dune-net
 }
 
 print_url() {

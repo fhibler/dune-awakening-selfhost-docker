@@ -3,6 +3,13 @@ set -euo pipefail
 
 cd "$(dirname "$0")/../.."
 
+# The probe image is built here through Compose. On Podman that build has to
+# run on the classic builder and may have to reach a socket outside the Docker
+# default; the seam exports both. It also supplies the repository prefix the
+# engine stores a locally built image under.
+# shellcheck source=runtime/scripts/lib/engine.sh
+. runtime/scripts/lib/engine.sh
+
 COMPOSE_FILE="docker-compose.public-probe.yml"
 HOST_COMPOSE_FILE="docker-compose.public-probe-host.yml"
 PROBE_ENV="runtime/generated/public-probe.env"
@@ -37,6 +44,10 @@ compose() {
   if [ "${DUNE_PUBLIC_PROBE_FORCE_BRIDGE:-false}" != "true" ] && use_host_network; then
     compose_files+=(-f "$HOST_COMPOSE_FILE")
   fi
+  # --env-file replaces .env rather than adding to it, so the restart policy
+  # install.sh persisted there never reaches this project. What does reach it
+  # is the seam sourced at the top of this file, which exports the policy into
+  # the environment Compose interpolates from. Keep that source.
   DUNE_HOST_REPO_ROOT="${DUNE_HOST_REPO_ROOT:-$(pwd -P)}" \
     COMPOSE_PROJECT_NAME="$PROJECT" \
     docker compose --env-file "$PROBE_ENV" "${compose_files[@]}" "$@"
@@ -78,7 +89,7 @@ reconcile_probe() {
       awk '{print $1}'
   )"
   [ -r "$BUILD_STATE" ] && saved_hash="$(tr -d '[:space:]' <"$BUILD_STATE")"
-  if [ "$current_hash" != "$saved_hash" ] || ! docker image inspect dune-public-probe:dev >/dev/null 2>&1; then
+  if [ "$current_hash" != "$saved_hash" ] || ! docker image inspect "${DUNE_ENGINE_IMAGE_PREFIX}dune-public-probe:dev" >/dev/null 2>&1; then
     compose build dune-public-probe
     printf '%s\n' "$current_hash" >"$BUILD_STATE"
     chmod 600 "$BUILD_STATE" 2>/dev/null || true
@@ -98,7 +109,12 @@ status_probe() {
     echo "State: disabled"
     return
   fi
-  docker inspect "$CONTAINER" --format 'State: {{.State.Status}}{{if .State.Health}} health={{.State.Health.Status}}{{end}}'
+  # The nested guard is not redundant: Docker leaves .State.Health nil for a
+  # container without a healthcheck, so the outer test is what keeps the
+  # template from dereferencing nil; Podman's compat inspect instead returns a
+  # non-nil empty object, so without the inner test it would print a bare
+  # "health=" for every container.
+  docker inspect "$CONTAINER" --format 'State: {{.State.Status}}{{if .State.Health}}{{if .State.Health.Status}} health={{.State.Health.Status}}{{end}}{{end}}'
   if load_probe_env; then
     local network_mode
     echo "Server ID: ${DUNE_PUBLIC_PROBE_SERVER_ID}"

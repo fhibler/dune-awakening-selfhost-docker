@@ -53,9 +53,16 @@ refute_lines ':Z' \
   "a bind mount was relabelled privately, which breaks sharing between containers"
 
 # Podman gates bridge name resolution behind a flag the Docker compat API does
-# not carry; dune_engine_create_network sets it before the compat call.
-refute_lines 'docker network create' \
-  "a bridge was created through the compat API alone and may come up without name resolution"
+# not carry; dune_engine_create_network sets it before the compat call. Swept
+# repo-wide rather than over the start scripts alone: twenty service-name
+# lookups depend on that bridge, and whichever script creates it first wins,
+# which for the metrics stack is not a start script.
+network_hits="$(grep -rnE -- 'docker network create' runtime/scripts/ install.sh \
+  | grep -v 'runtime/scripts/lib/engine\.sh:' || true)"
+if [ -n "$network_hits" ]; then
+  fail "a bridge was created through the compat API alone and may come up without name resolution"
+  printf '%s\n' "$network_hits" | sed 's/^/  /' >&2
+fi
 
 # The Console's memory balancer reads memory.swap.current from inside a game
 # server and takes it for that server's own usage, which is only true under a
