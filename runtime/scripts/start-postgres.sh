@@ -38,17 +38,20 @@ DUNE_DB_PASSWORD="$dune_db_password" runtime/scripts/postgres-bootstrap-sql.sh \
   > "$POSTGRES_BOOTSTRAP_SQL"
 chmod 600 "$POSTGRES_BOOTSTRAP_SQL"
 
-docker network create dune-net 2>/dev/null || true
+dune_engine_create_network dune-net
 
 runtime/scripts/stop-postgres-container.sh
 
-docker volume create dune-postgres-data >/dev/null
+# Docker answers a duplicate volume create with success; Podman's CLI exits
+# 125, which under `set -e` means Postgres never starts on any run after the
+# first. Guard it the way the sibling network create already is.
+docker volume create dune-postgres-data >/dev/null 2>&1 || true
 
 docker run -d \
   "${DUNE_DOCKER_LOG_ARGS[@]}" \
   --name dune-postgres \
   --network dune-net \
-  --restart unless-stopped \
+  --restart "$DUNE_ENGINE_RESTART_POLICY" \
   -p "127.0.0.1:${POSTGRES_PORT}:5432" \
   -e POSTGRES_USER=postgres \
   -e POSTGRES_PASSWORD=postgres \

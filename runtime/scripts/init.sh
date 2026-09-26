@@ -15,6 +15,38 @@ dune_persist_compose_project_name "$(pwd -P)" "$DUNE_COMPOSE_PROJECT_NAME"
 mkdir -p runtime/secrets runtime/generated
 
 require_docker_prereqs() {
+  if [ "$DUNE_ENGINE_KIND" = "podman" ]; then
+    # A Podman host needs the Docker *CLI* and the Compose v2 plugin, not a
+    # second engine. Printing the Docker Engine apt recipe here would have an
+    # operator install dockerd alongside Podman and then wonder which one the
+    # stack is talking to.
+    if ! command -v docker >/dev/null 2>&1; then
+      echo "Podman was detected, but the Docker CLI it is driven through was not found in PATH."
+      echo
+      echo "Install the Docker CLI and the Compose v2 plugin, then point them at Podman:"
+      echo "  sudo dnf install -y podman podman-docker netavark aardvark-dns catatonit"
+      echo "  sudo systemctl enable --now podman.socket"
+      echo
+      echo "See docs/architecture/CONTAINER-ENGINES.md for the supported layout."
+      echo
+      echo "Then run:"
+      echo "  dune init"
+      exit 1
+    fi
+    if ! docker info >/dev/null 2>&1; then
+      echo "The Docker CLI is installed, but Podman's Docker-compatible API is not reachable."
+      echo
+      echo "Common fixes:"
+      echo "  sudo systemctl enable --now podman.socket"
+      echo "  sudo usermod -aG podman \$USER"
+      echo "  newgrp podman"
+      echo
+      echo "Expected socket: $DUNE_ENGINE_SOCKET"
+      exit 1
+    fi
+    return
+  fi
+
   if ! command -v docker >/dev/null 2>&1; then
     echo "Docker is required but was not found in PATH."
     echo
@@ -198,14 +230,21 @@ fresh_reset_runtime() {
     local volume_mount
     volume_mount="$(docker volume inspect -f '{{ .Mountpoint }}' dune-postgres-data 2>/dev/null || true)"
 
-    if [ -n "$volume_mount" ] && [ -d "$volume_mount" ]; then
-      echo "Backing up existing Postgres volume..."
-      tar -czf "$backup_dir/dune-postgres-data.tgz" -C "$volume_mount" .
-      echo "Postgres volume backup:"
-      echo "  $backup_dir/dune-postgres-data.tgz"
-    else
-      echo "Could not find Postgres volume mountpoint; skipping volume tar backup."
+    # This tar is the only copy of the database that survives the removal
+    # below, so a missing mountpoint has to stop the reset rather than
+    # downgrade it to a warning. The compat API can report an empty mountpoint
+    # for a volume that is not currently mounted.
+    if [ -z "$volume_mount" ] || [ ! -d "$volume_mount" ]; then
+      echo "Could not find the Postgres volume mountpoint; refusing to remove dune-postgres-data without a backup." >&2
+      echo "Reported mountpoint: ${volume_mount:-<empty>}" >&2
+      echo "Start the stack once so the volume is mounted, or back it up by hand, then retry." >&2
+      exit 1
     fi
+
+    echo "Backing up existing Postgres volume..."
+    tar -czf "$backup_dir/dune-postgres-data.tgz" -C "$volume_mount" .
+    echo "Postgres volume backup:"
+    echo "  $backup_dir/dune-postgres-data.tgz"
 
     docker volume rm dune-postgres-data >/dev/null
     echo "Removed old Postgres volume: dune-postgres-data"

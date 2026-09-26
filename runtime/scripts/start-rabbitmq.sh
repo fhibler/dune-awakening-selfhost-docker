@@ -103,31 +103,31 @@ chmod 644 runtime/rabbitmq-admin/config/rabbitmq.conf
 chmod 644 runtime/rabbitmq-game/config/enabled_plugins
 chmod 644 runtime/rabbitmq-admin/config/enabled_plugins
 
-docker network create dune-net 2>/dev/null || true
+dune_engine_create_network dune-net
 docker rm -f dune-rmq-admin dune-rmq-game 2>/dev/null || true
 
 docker run -d \
   "${DUNE_DOCKER_LOG_ARGS[@]}" \
   --name dune-rmq-admin \
   --network dune-net \
-  --restart unless-stopped \
+  --restart "$DUNE_ENGINE_RESTART_POLICY" \
   -p "127.0.0.1:${RMQ_ADMIN_PORT}:5672" \
-  -v "$(host_path "$PWD/runtime/rabbitmq-admin/config/rabbitmq.conf"):/etc/rabbitmq/rabbitmq.conf:ro" \
-  -v "$(host_path "$PWD/runtime/rabbitmq-admin/config/enabled_plugins"):/etc/rabbitmq/enabled_plugins:ro" \
+  -v "$(dune_engine_mount "$(host_path "$PWD/runtime/rabbitmq-admin/config/rabbitmq.conf")" /etc/rabbitmq/rabbitmq.conf ro)" \
+  -v "$(dune_engine_mount "$(host_path "$PWD/runtime/rabbitmq-admin/config/enabled_plugins")" /etc/rabbitmq/enabled_plugins ro)" \
   "$IMAGE"
 docker run -d \
   "${DUNE_DOCKER_LOG_ARGS[@]}" \
   --name dune-rmq-game \
   --network dune-net \
-  --restart unless-stopped \
+  --restart "$DUNE_ENGINE_RESTART_POLICY" \
   -p "${RMQ_GAME_PORT}:5672/tcp" \
   -p "127.0.0.1:${RMQ_GAME_LOCAL_HTTP_PORT}:15672/tcp" \
   -p "${RMQ_GAME_HTTP_PORT}:15672/tcp" \
-  -v "$(host_path "$PWD/runtime/rabbitmq-game/config/rabbitmq.conf"):/etc/rabbitmq/rabbitmq.conf:ro" \
-  -v "$(host_path "$PWD/runtime/rabbitmq-game/config/enabled_plugins"):/etc/rabbitmq/enabled_plugins:ro" \
-  -v "$(host_path "$PWD/runtime/rabbitmq-game/certs/cacert.pem"):/etc/rabbitmq/cacert.pem:ro" \
-  -v "$(host_path "$PWD/runtime/rabbitmq-game/certs/cert.pem"):/etc/rabbitmq/cert.pem:ro" \
-  -v "$(host_path "$PWD/runtime/rabbitmq-game/certs/key.pem"):/etc/rabbitmq/key.pem:ro" \
+  -v "$(dune_engine_mount "$(host_path "$PWD/runtime/rabbitmq-game/config/rabbitmq.conf")" /etc/rabbitmq/rabbitmq.conf ro)" \
+  -v "$(dune_engine_mount "$(host_path "$PWD/runtime/rabbitmq-game/config/enabled_plugins")" /etc/rabbitmq/enabled_plugins ro)" \
+  -v "$(dune_engine_mount "$(host_path "$PWD/runtime/rabbitmq-game/certs/cacert.pem")" /etc/rabbitmq/cacert.pem ro)" \
+  -v "$(dune_engine_mount "$(host_path "$PWD/runtime/rabbitmq-game/certs/cert.pem")" /etc/rabbitmq/cert.pem ro)" \
+  -v "$(dune_engine_mount "$(host_path "$PWD/runtime/rabbitmq-game/certs/key.pem")" /etc/rabbitmq/key.pem ro)" \
   "$IMAGE"
 
 sleep 8

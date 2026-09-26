@@ -4,8 +4,12 @@ set -euo pipefail
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 TEST_ROOT="$(mktemp -d)"
 trap 'rm -rf "$TEST_ROOT"' EXIT
-mkdir -p "$TEST_ROOT/bin" "$TEST_ROOT/repo/runtime/generated" "$TEST_ROOT/repo/runtime/scripts"
+mkdir -p "$TEST_ROOT/bin" "$TEST_ROOT/repo/runtime/generated" "$TEST_ROOT/repo/runtime/scripts/lib"
 cp "$REPO_ROOT/runtime/scripts/storage.sh" "$TEST_ROOT/repo/runtime/scripts/storage.sh"
+cp "$REPO_ROOT/runtime/scripts/lib/engine.sh" "$TEST_ROOT/repo/runtime/scripts/lib/engine.sh"
+# This file covers the Docker leg, byte for byte. Pinning the engine keeps the
+# detection probe off the fake below, which only knows the calls asserted here.
+export DUNE_CONTAINER_ENGINE=docker
 cat > "$TEST_ROOT/repo/runtime/generated/image-tags.env" <<'EOF'
 DUNE_WORLD_IMAGE_TAG=current
 DUNE_POSTGRES_IMAGE_TAG=pg-current

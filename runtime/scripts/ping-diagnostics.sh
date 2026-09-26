@@ -32,18 +32,25 @@ container_running() {
   docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "$name"
 }
 
+# Read the container's argv through .Config.Cmd, not .Args. Docker splits argv
+# into .Path plus .Args and both fields agree; Podman's compat inspect derives
+# them from the entrypoint differently and can leave .Args empty. The
+# autoscaler already reads .Config.Cmd for the same arguments on the same
+# containers, so this is also what keeps the two from disagreeing about one
+# container. The extra leading element .Config.Cmd carries cannot match either
+# predicate below, which both anchor on a flag prefix.
 container_arg_has() {
   local container="$1"
   local pattern="$2"
 
-  docker inspect "$container" --format '{{range .Args}}{{println .}}{{end}}' 2>/dev/null | grep -Fxq -- "$pattern"
+  docker inspect "$container" --format '{{range .Config.Cmd}}{{println .}}{{end}}' 2>/dev/null | grep -Fxq -- "$pattern"
 }
 
 container_arg_value() {
   local container="$1"
   local prefix="$2"
 
-  docker inspect "$container" --format '{{range .Args}}{{println .}}{{end}}' 2>/dev/null \
+  docker inspect "$container" --format '{{range .Config.Cmd}}{{println .}}{{end}}' 2>/dev/null \
     | awk -v prefix="$prefix" 'index($0, prefix) == 1 { print substr($0, length(prefix) + 1); exit }'
 }
 

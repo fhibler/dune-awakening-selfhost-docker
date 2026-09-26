@@ -48,7 +48,7 @@ RMQ_GAME_HTTP_PORT="$(resolve_rmq_game_http_port)"
 
 mkdir -p runtime/server-gateway/config
 
-docker network create dune-net 2>/dev/null || true
+dune_engine_create_network dune-net
 docker rm -f dune-server-gateway 2>/dev/null || true
 ensure_host_latency_tuned
 
@@ -56,8 +56,8 @@ docker run -d \
   "${DUNE_DOCKER_LOG_ARGS[@]}" \
   --name dune-server-gateway \
   --network dune-net \
-  --restart unless-stopped \
-  -v "$(host_path "$PWD/runtime/server-gateway/config"):/etc/app/conf.d:ro" \
+  --restart "$DUNE_ENGINE_RESTART_POLICY" \
+  -v "$(dune_engine_mount "$(host_path "$PWD/runtime/server-gateway/config")" /etc/app/conf.d ro)" \
   -e "FuncomLiveServices__ServiceAuthToken=$FUNCOM_TOKEN" \
   -e "FuncomLiveServices__RmqTlsEnabled=true" \
   -e "FuncomLiveServices__BattlegroupAuthorizationPreset=BattlegroupInternal" \

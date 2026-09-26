@@ -4,8 +4,19 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 # shellcheck disable=SC1091
 [ -f .env ] && . ./.env
+# shellcheck source=runtime/scripts/lib/engine.sh
+source runtime/scripts/lib/engine.sh
 
 HOST_SWAP_FILE="/var/lib/dune-awakening/swapfile"
+
+# Splice into the privileged helper that binds /:/host and chroots into it:
+# that mount must never be relabelled. See dune_engine_label_disable_args in
+# lib/engine.sh. Empty on Docker. memory-swap.sh does not source
+# runtime-env.sh, which builds the same array for the scripts that do.
+DUNE_ENGINE_LABEL_DISABLE_ARGS=()
+if [ -n "$(dune_engine_label_disable_args)" ]; then
+  DUNE_ENGINE_LABEL_DISABLE_ARGS=(--security-opt label=disable)
+fi
 
 env_value() {
   awk -F= -v key="$1" '$1 == key { print substr($0, length(key) + 2); exit }' .env 2>/dev/null || true
@@ -62,6 +73,7 @@ host_helper() {
   host_root="${DUNE_HOST_REPO_ROOT:-$(pwd -P)}"
   docker image inspect "$image" >/dev/null 2>&1 || { echo "Console helper image not found: $image" >&2; exit 1; }
   docker run --rm --user 0:0 --privileged --pid=host --network=host \
+    "${DUNE_ENGINE_LABEL_DISABLE_ARGS[@]}" \
     -v /:/host \
     --entrypoint chroot \
     "$image" /host "$host_root/runtime/scripts/memory-swap-host.sh" "$action" "$@"

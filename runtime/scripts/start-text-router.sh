@@ -42,7 +42,7 @@ FAKE_K8S_SERVICEACCOUNT_DIR="$(fake_k8s_serviceaccount_dir text-router)"
 
 prepare_fake_k8s_serviceaccount "$FAKE_K8S_SERVICEACCOUNT_DIR" funcom-seabass-dune-docker
 
-docker network create dune-net 2>/dev/null || true
+dune_engine_create_network dune-net
 docker rm -f dune-text-router 2>/dev/null || true
 
 echo "Waiting for game RabbitMQ TLS listener..."
@@ -65,9 +65,9 @@ docker run -d \
   "${DUNE_DOCKER_LOG_ARGS[@]}" \
   --name dune-text-router \
   --network dune-net \
-  --restart unless-stopped \
+  --restart "$DUNE_ENGINE_RESTART_POLICY" \
   -p "127.0.0.1:${TEXT_ROUTER_PORT}:5059/tcp" \
-  -v "$(host_path "$FAKE_K8S_SERVICEACCOUNT_DIR"):/run/secrets/kubernetes.io/serviceaccount:ro" \
+  -v "$(dune_engine_mount "$(host_path "$FAKE_K8S_SERVICEACCOUNT_DIR")" /run/secrets/kubernetes.io/serviceaccount ro)" \
   -e "KUBERNETES_SERVICE_HOST=igwo.local" \
   -e "KUBERNETES_SERVICE_PORT=6443" \
   -e "KUBERNETES_SERVICE_PORT_HTTPS=6443" \

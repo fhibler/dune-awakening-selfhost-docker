@@ -10,6 +10,7 @@ fi
 
 [ -f .env ] && . ./.env
 source runtime/scripts/host-paths.sh
+source runtime/scripts/lib/engine.sh
 
 CONTAINER_NAME="dune-autoscaler"
 IMAGE="dune-orchestrator:dev"
@@ -70,14 +71,14 @@ docker run -d \
   "${DUNE_DOCKER_LOG_ARGS[@]}" \
   --name "$CONTAINER_NAME" \
   --network host \
-  --restart unless-stopped \
+  --restart "$DUNE_ENGINE_RESTART_POLICY" \
   --user "${HOST_UID}:${HOST_GID}" \
   "${group_args[@]}" \
   --entrypoint bash \
   -e "DUNE_CONTAINER_REPO_ROOT=$AUTOSCALER_CONTAINER_REPO_ROOT" \
   -e "DUNE_HOST_REPO_ROOT=$HOST_REPO_ROOT" \
-  -v /var/run/docker.sock:/var/run/docker.sock \
-  -v "$HOST_REPO_ROOT:$AUTOSCALER_CONTAINER_REPO_ROOT" \
+  -v "$(dune_engine_mount /var/run/docker.sock /var/run/docker.sock)" \
+  -v "$(dune_engine_mount "$HOST_REPO_ROOT" "$AUTOSCALER_CONTAINER_REPO_ROOT")" \
   -w "$AUTOSCALER_CONTAINER_REPO_ROOT" \
   "$IMAGE" \
   runtime/scripts/autoscaler.sh >/dev/null

@@ -271,18 +271,18 @@ if [ ! -f runtime/director/config/director_config.ini ]; then
   exit 1
 fi
 
-docker network create dune-net 2>/dev/null || true
+dune_engine_create_network dune-net
 docker rm -f dune-director 2>/dev/null || true
 
 docker run -d \
   "${DUNE_DOCKER_LOG_ARGS[@]}" \
   --name dune-director \
   --network dune-net \
-  --restart unless-stopped \
+  --restart "$DUNE_ENGINE_RESTART_POLICY" \
   -p "127.0.0.1:${DIRECTOR_PORT}:11717/tcp" \
-  -v "$(host_path "$PWD/runtime/director/config/director_config.ini"):/Tools/Battlegroups/Director/BattlegroupDirector/director_config.ini:ro" \
-  -v "$(host_path "$PWD/runtime/generated/director-bundle"):/opt/dune-director-bundle" \
-  -v "$(host_path "$FAKE_K8S_SERVICEACCOUNT_DIR"):/run/secrets/kubernetes.io/serviceaccount:ro" \
+  -v "$(dune_engine_mount "$(host_path "$PWD/runtime/director/config/director_config.ini")" /Tools/Battlegroups/Director/BattlegroupDirector/director_config.ini ro)" \
+  -v "$(dune_engine_mount "$(host_path "$PWD/runtime/generated/director-bundle")" /opt/dune-director-bundle)" \
+  -v "$(dune_engine_mount "$(host_path "$FAKE_K8S_SERVICEACCOUNT_DIR")" /run/secrets/kubernetes.io/serviceaccount ro)" \
   -e "DOTNET_BUNDLE_EXTRACT_BASE_DIR=/opt/dune-director-bundle" \
   -e "KUBERNETES_SERVICE_HOST=igwo.local" \
   -e "KUBERNETES_SERVICE_PORT=6443" \

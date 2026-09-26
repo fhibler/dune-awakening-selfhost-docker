@@ -185,17 +185,18 @@ docker run -d \
   "${DUNE_DOCKER_LOG_ARGS[@]}" \
   --name dune-server-survival-1 \
   --network host \
-  --restart unless-stopped \
+  --restart "$DUNE_ENGINE_RESTART_POLICY" \
   --privileged \
   --cap-add SYS_ADMIN \
   --security-opt seccomp=unconfined \
+  "${DUNE_ENGINE_CGROUPNS_ARGS[@]}" \
   --memory "$MEMORY" \
   "${MEMORY_SWAP_ARGS[@]}" \
   --memory-reservation "$MEMORY" \
-  -v "$(host_path "$PWD/runtime/game/survival-1/Saved"):/home/dune/server/DuneSandbox/Saved" \
-  -v "$(host_path "$PWD/runtime/game/artifacts"):/home/dune/artifacts" \
-  -v "$(host_path "$PWD/runtime/container"):/opt/dune-local:ro" \
-  -v "$(host_path "$FAKE_K8S_SERVICEACCOUNT_DIR"):/run/secrets/kubernetes.io/serviceaccount:ro" \
+  -v "$(dune_engine_mount "$(host_path "$PWD/runtime/game/survival-1/Saved")" /home/dune/server/DuneSandbox/Saved)" \
+  -v "$(dune_engine_mount "$(host_path "$PWD/runtime/game/artifacts")" /home/dune/artifacts)" \
+  -v "$(dune_engine_mount "$(host_path "$PWD/runtime/container")" /opt/dune-local ro)" \
+  -v "$(dune_engine_mount "$(host_path "$FAKE_K8S_SERVICEACCOUNT_DIR")" /run/secrets/kubernetes.io/serviceaccount ro)" \
   -e "POD_UID=docker-survival-1" \
   -e "POD_NAME=${BATTLEGROUP_ID}-sg-survival-1-pod-1" \
   -e "POD_IP=$MULTIHOME_IP" \

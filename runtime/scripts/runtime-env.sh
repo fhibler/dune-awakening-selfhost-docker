@@ -54,6 +54,15 @@ if [ -n "$(dune_engine_label_disable_args)" ]; then
   DUNE_ENGINE_LABEL_DISABLE_ARGS=(--security-opt label=disable)
 fi
 
+# Splice into a `docker run` for a container the Console's memory balancer
+# samples for swap; see dune_engine_cgroupns_args in lib/engine.sh. Empty on
+# Docker.
+# shellcheck disable=SC2034 # Consumed by scripts that source this file.
+DUNE_ENGINE_CGROUPNS_ARGS=()
+if [ -n "$(dune_engine_cgroupns_args)" ]; then
+  DUNE_ENGINE_CGROUPNS_ARGS=(--cgroupns=private)
+fi
+
 value_is_known() {
   local value="${1:-}"
   [ -n "$value" ] && [ "$value" != "unknown" ]

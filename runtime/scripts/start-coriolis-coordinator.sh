@@ -66,7 +66,7 @@ docker run -d \
   "${DUNE_DOCKER_LOG_ARGS[@]}" \
   --name "$CONTAINER_NAME" \
   --network host \
-  --restart unless-stopped \
+  --restart "$DUNE_ENGINE_RESTART_POLICY" \
   --user "${HOST_UID}:${HOST_GID}" \
   "${group_args[@]}" \
   --entrypoint bash \
@@ -76,8 +76,8 @@ docker run -d \
   -e "DUNE_HOST_GID=$HOST_GID" \
   -e "DUNE_CORIOLIS_SAFE_DATA_CLEANUP=${DUNE_CORIOLIS_SAFE_DATA_CLEANUP:-1}" \
   -e DUNE_RUNTIME_PERMISSIONS_REPAIRED=1 \
-  -v /var/run/docker.sock:/var/run/docker.sock \
-  -v "$HOST_REPO_ROOT:$CONTAINER_REPO_ROOT" \
+  -v "$(dune_engine_mount /var/run/docker.sock /var/run/docker.sock)" \
+  -v "$(dune_engine_mount "$HOST_REPO_ROOT" "$CONTAINER_REPO_ROOT")" \
   -w "$CONTAINER_REPO_ROOT" \
   "$IMAGE" \
   runtime/scripts/coriolis-coordinator.sh monitor >/dev/null

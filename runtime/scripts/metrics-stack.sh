@@ -8,6 +8,21 @@ cd "$(dirname "$0")/../.."
 DUNE_COMPOSE_PROJECT_NAME="$(dune_resolve_compose_project_name "$(pwd -P)")"
 export DUNE_COMPOSE_PROJECT_NAME
 
+# shellcheck source=runtime/scripts/lib/engine.sh
+. runtime/scripts/lib/engine.sh
+
+# Compose cannot call the seam's shell functions, so the two host paths
+# docker-compose.metrics.yml needs arrive as interpolated variables. This is
+# the only launcher of that file, which makes it the only place they belong.
+# Podman stores images under /var/lib/containers/storage and keeps network
+# namespaces in /run/netns; the Docker-shaped defaults live in the compose
+# file so a bare `docker compose -f docker-compose.metrics.yml` still renders
+# exactly what it always did.
+if [ "$DUNE_ENGINE_KIND" = "podman" ]; then
+  export DUNE_ENGINE_STORAGE_DIR="${DUNE_ENGINE_STORAGE_DIR:-/var/lib/containers/storage}"
+  export DUNE_ENGINE_NETNS_DIR="${DUNE_ENGINE_NETNS_DIR:-/run/netns}"
+fi
+
 command_name="${1:-status}"
 compose_file="docker-compose.metrics.yml"
 metrics_project_name="${DUNE_METRICS_COMPOSE_PROJECT_NAME:-${DUNE_COMPOSE_PROJECT_NAME}-metrics}"

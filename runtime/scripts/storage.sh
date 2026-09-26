@@ -3,6 +3,9 @@ set -euo pipefail
 
 cd "$(dirname "$0")/../.."
 
+# shellcheck source=runtime/scripts/lib/engine.sh
+. runtime/scripts/lib/engine.sh
+
 usage() {
   cat <<'EOF'
 Usage:
@@ -12,13 +15,21 @@ Usage:
 The default cleanup removes only obsolete Funcom/Dune game images. It never
 removes containers, volumes, databases, game files, or backups.
 
---build-cache also removes unused Docker build cache. Docker protects cache
-used by active builds, but the default builder is shared, so this option can
-affect build cache from other projects on the same host.
+--build-cache also removes unused build cache. The engine protects cache used
+by active builds, but the builder is shared, so this option can affect build
+cache from other projects on the same host.
 EOF
 }
 
 require_docker() {
+  if [ "$DUNE_ENGINE_KIND" = "podman" ]; then
+    # Naming Docker here would send an operator to install a second engine.
+    command -v docker >/dev/null 2>&1 \
+      || { echo "The Docker CLI is not installed; Podman hosts still need it to talk to $DUNE_ENGINE_SOCKET." >&2; exit 1; }
+    docker info >/dev/null 2>&1 \
+      || { echo "Podman's Docker-compatible API at $DUNE_ENGINE_SOCKET is not reachable." >&2; exit 1; }
+    return
+  fi
   command -v docker >/dev/null 2>&1 || { echo "Docker is not installed." >&2; exit 1; }
   docker info >/dev/null 2>&1 || { echo "Docker daemon is not reachable." >&2; exit 1; }
 }
@@ -48,23 +59,36 @@ current_image_refs() {
   # These tags are operational dependencies even when the containers currently
   # using their older image IDs are still running. Startup and host-side repair
   # scripts launch short-lived helpers from these exact references.
+  #
+  # The prefix matters: Podman stores a locally built image as
+  # localhost/<name>, and an unqualified name that does not resolve leaves the
+  # image out of the protected set below -- which is the set that keeps
+  # cleanup from removing an image the stack still launches helpers from.
   printf '%s\n' \
-    "dune-orchestrator:dev" \
-    "redblink-dune-docker-console:dev"
+    "${DUNE_ENGINE_IMAGE_PREFIX}dune-orchestrator:dev" \
+    "${DUNE_ENGINE_IMAGE_PREFIX}redblink-dune-docker-console:dev"
 }
 
+# The protection set is built from container .Image and image .Id, then matched
+# whole-line against `image ls --no-trunc`. Docker prefixes all three with
+# `sha256:`; Podman's compat endpoints are not consistent about it, and a
+# single bare digest silently drops an in-use image out of the protected set.
+# Compare the bare digests so the three sides cannot disagree on either engine.
 protected_image_ids() {
-  local container ref
+  local container ref id
 
   while IFS= read -r container; do
     [ -n "$container" ] || continue
-    docker inspect --format '{{.Image}}' "$container" 2>/dev/null || true
+    id="$(docker inspect --format '{{.Image}}' "$container" 2>/dev/null || true)"
+    [ -n "$id" ] && printf '%s\n' "$(dune_engine_normalize_digest "$id")"
   done < <(docker container ls -aq)
 
   while IFS= read -r ref; do
     [ -n "$ref" ] || continue
-    docker image inspect --format '{{.Id}}' "$ref" 2>/dev/null || true
+    id="$(docker image inspect --format '{{.Id}}' "$ref" 2>/dev/null || true)"
+    [ -n "$id" ] && printf '%s\n' "$(dune_engine_normalize_digest "$id")"
   done < <(current_image_refs)
+  return 0
 }
 
 cleanup_candidate_images() {
@@ -96,7 +120,7 @@ obsolete_dune_image_ids() {
         fi
         ;;
     esac
-    grep -qxF "$id" "$protected_file" && continue
+    grep -qxF "$(dune_engine_normalize_digest "$id")" "$protected_file" && continue
     [ -z "${seen[$id]:-}" ] || continue
     seen[$id]=1
     printf '%s|%s:%s\n' "$id" "$repo" "$tag"
@@ -114,6 +138,7 @@ storage_status() {
 
 cleanup_storage() {
   local dry_run=0 build_cache=0 row id ref removed=0
+  local -a prune_cmd=()
   shift || true
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -146,11 +171,24 @@ cleanup_storage() {
   if [ "$build_cache" = "1" ]; then
     echo
     echo "=== Unused Docker build cache ==="
+    if [ "$DUNE_ENGINE_SUPPORTS_BUILDER_PRUNE" = "1" ]; then
+      prune_cmd=(docker builder prune --force --all)
+    else
+      # The only divergence in this repo where the Docker dialect has no
+      # equivalent at all: there is no `podman builder prune`, and the compat
+      # API does not implement /build/prune, so the Docker CLI cannot reach
+      # Podman's build cache however it is pointed. Buildah's store is where
+      # the cache lives and this is the command that clears it.
+      prune_cmd=(podman system prune --build --force)
+    fi
     if [ "$dry_run" = "1" ]; then
-      echo "WOULD RUN docker builder prune --force --all"
+      echo "WOULD RUN ${prune_cmd[*]}"
+    elif ! command -v "${prune_cmd[0]}" >/dev/null 2>&1; then
+      echo "SKIPPED: ${prune_cmd[0]} is not available here."
+      echo "Run this on the container host: ${prune_cmd[*]}"
     else
       echo "This builder may be shared with other projects on this Docker host."
-      docker builder prune --force --all
+      "${prune_cmd[@]}"
     fi
   fi
 }

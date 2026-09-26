@@ -7,7 +7,7 @@
 # the real Docker CLI and the real Compose v2 plugin at Podman's
 # Docker-compatible API socket -- not by rewriting the call sites to `podman`.
 # Rewriting them would turn a socket change into an audit of every Go template
-# in the repo, on the engine that is already working. See docs/podman.md.
+# in the repo, on the engine that is already working. See docs/architecture/CONTAINER-ENGINES.md.
 #
 # What survives that socket swap is the set of places where Podman genuinely
 # behaves differently: restart policy, SELinux mount labels, log options,
@@ -209,6 +209,50 @@ dune_engine_label_disable_args() {
   if [ "$DUNE_ENGINE_KIND" = "podman" ]; then
     printf '%s' '--security-opt label=disable'
   fi
+}
+
+# ---------------------------------------------------------------------------
+# Cgroups
+# ---------------------------------------------------------------------------
+
+# The console's memory balancer reads /sys/fs/cgroup/memory.swap.current from
+# inside a game server and treats the number as that server's own usage. That
+# only holds under a private cgroup namespace, where the container sees its
+# own cgroup at the root of /sys/fs/cgroup. Docker defaults to private on a
+# cgroup-v2 host; rootful Podman takes the default from containers.conf and
+# has shipped `host` in several configurations, where the same read returns
+# the host root's figures -- a plausible number, so the balancer moves memory
+# on host-wide swap and nothing looks wrong.
+#
+# Prints an empty string on Docker, whose default is already private, so
+# splicing it there expands to nothing.
+dune_engine_cgroupns_args() {
+  if [ "$DUNE_ENGINE_KIND" = "podman" ]; then
+    printf '%s' '--cgroupns=private'
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# Networks
+# ---------------------------------------------------------------------------
+
+# Create the stack's user-defined bridge, tolerating one that already exists.
+#
+# Twenty call sites address a peer by container name -- both RabbitMQ brokers
+# authenticate every client against http://dune-text-router:5059, and the
+# gateway, director and text router all reach the database as dune-postgres.
+# Docker's embedded resolver is unconditional on a user-defined bridge.
+# Podman gates resolution per network behind netavark's dns_enabled, which
+# the Docker compat API does not expose, so a bridge created through the
+# socket inherits whatever the backend happens to default to and the failure
+# surfaces as an NXDOMAIN at runtime rather than an error here. `--dns-enabled`
+# exists only on podman(1), so the network is created there first and the
+# compat call behind it becomes the no-op its `|| true` already allowed for.
+dune_engine_create_network() {
+  if [ "$DUNE_ENGINE_KIND" = "podman" ] && command -v podman >/dev/null 2>&1; then
+    podman network create --dns-enabled "$1" >/dev/null 2>&1 || true
+  fi
+  docker network create "$1" 2>/dev/null || true
 }
 
 # ---------------------------------------------------------------------------
