@@ -19,9 +19,10 @@ trap 'rm -rf "$test_root"' EXIT
 
 project="$test_root/project"
 bin_dir="$test_root/bin"
-mkdir -p "$project/runtime/scripts" "$project/runtime/generated" "$bin_dir"
+mkdir -p "$project/runtime/scripts/lib" "$project/runtime/generated" "$bin_dir"
 
 cp "$repo_root/runtime/scripts/schedule-deferred-reconcile.sh" "$project/runtime/scripts/"
+cp "$repo_root/runtime/scripts/lib/engine.sh" "$project/runtime/scripts/lib/engine.sh"
 
 # Stands in for the real reconcile, which needs Postgres and a live farm.
 cat > "$project/runtime/scripts/deferred-reconcile.sh" <<'STUB'
@@ -96,7 +97,26 @@ grep -q "^rm -f dune-deferred-reconcile" "$docker_log" \
   || fail "a previous helper is not cleared before starting a new one" "$docker_log"
 echo "PASS deferred-reconcile-replaces-a-stale-helper"
 
-# --- Case 4: no console image still gets a reconcile -----------------------
+# --- Case 4: the repo bind is relabelled on Podman, and only there ---------
+# Podman mounts a host directory into a container without giving it a label the
+# container can read, so the reconcile's own checkout is unreadable to it
+# unless the bind asks for the relabel. The engine's socket never does: it is
+# the host's, and rewriting its context breaks every other client.
+
+run_schedule podman DUNE_CONTAINER_ENGINE=podman \
+  || fail "schedule failed on podman" "$test_root/podman.log"
+grep -qF -- "-v /srv/hostrepo:/repo:z" "$docker_log" \
+  || fail "the repo bind is not relabelled on podman" "$docker_log"
+grep -qF -- "-v /var/run/docker.sock:/var/run/docker.sock " "$docker_log" \
+  || fail "the engine socket bind was relabelled on podman" "$docker_log"
+
+run_schedule dockerleg DUNE_CONTAINER_ENGINE=docker \
+  || fail "schedule failed on docker" "$test_root/dockerleg.log"
+grep -qF -- "-v /srv/hostrepo:/repo " "$docker_log" \
+  || fail "the repo bind changed on docker" "$docker_log"
+echo "PASS deferred-reconcile-relabels-the-repo-bind-on-podman-only"
+
+# --- Case 5: no console image still gets a reconcile -----------------------
 # A host CLI install has no image and no console to be killed by, so the
 # in-process job is correct there. Skipping instead would lose the reconcile.
 
@@ -108,14 +128,14 @@ grep -q "in-process" "$test_root/noimage.log" \
   || fail "did not fall back to an in-process reconcile" "$test_root/noimage.log"
 echo "PASS deferred-reconcile-falls-back-without-the-image"
 
-# --- Case 5: a failed docker run falls back rather than losing it ----------
+# --- Case 6: a failed docker run falls back rather than losing it ----------
 
 run_schedule runfails MOCK_RUN_FAILS=1 || fail "schedule failed when docker run failed" "$test_root/runfails.log"
 grep -q "in-process" "$test_root/runfails.log" \
   || fail "a failed helper launch did not fall back" "$test_root/runfails.log"
 echo "PASS deferred-reconcile-falls-back-when-the-helper-will-not-start"
 
-# --- Case 6: a failing step is reported, not swallowed --------------------
+# --- Case 7: a failing step is reported, not swallowed --------------------
 # Every step is deliberately non-fatal, so one failure does not cost the
 # others -- but `|| true` also hid them. A reconcile refusing because Postgres
 # is down read exactly like one that ran and found nothing to do.
@@ -160,13 +180,13 @@ grep -q "Survival_1 dimensions FAILED" "$test_root/deferred.log" \
   || fail "a failing reconcile was not reported" "$test_root/deferred.log"
 echo "PASS deferred-reconcile-reports-a-failing-step"
 
-# --- Case 7: one failure does not cost the later steps --------------------
+# --- Case 8: one failure does not cost the later steps --------------------
 
 grep -q "sietch override publish ok" "$test_root/deferred.log" \
   || fail "a failure earlier in the sequence stopped the later steps" "$test_root/deferred.log"
 echo "PASS deferred-reconcile-continues-past-a-failure"
 
-# --- Case 8: nothing backgrounds the reconcile directly any more ----------
+# --- Case 9: nothing backgrounds the reconcile directly any more ----------
 # start-all.sh was not the only launch site -- `dune restart survival` had its
 # own copy of the same background job, so fixing one left the other exposed.
 # Any new caller has to go through the scheduler or it inherits the bug.

@@ -46,7 +46,7 @@ dune_compose_container_label() {
 # different implementation that writes `io.podman.compose.*` and would match
 # nothing here, silently. That is the single strongest reason the Podman
 # deployment uses the real Compose v2 plugin against Podman's Docker-compatible
-# socket rather than podman-compose. See docs/podman.md.
+# socket rather than podman-compose. See docs/architecture/CONTAINER-ENGINES.md.
 dune_compose_service_projects() {
   dune_compose_service="$1"
   command -v docker >/dev/null 2>&1 || return 1

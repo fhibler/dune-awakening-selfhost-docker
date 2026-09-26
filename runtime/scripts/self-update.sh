@@ -5,6 +5,8 @@ cd "$(dirname "$0")/../.."
 ROOT_DIR="$(pwd)"
 
 . runtime/scripts/compose-project.sh
+# shellcheck source=runtime/scripts/lib/engine.sh
+. runtime/scripts/lib/engine.sh
 DUNE_COMPOSE_PROJECT_NAME="$(dune_resolve_compose_project_name "$ROOT_DIR")"
 export DUNE_COMPOSE_PROJECT_NAME
 
@@ -216,7 +218,11 @@ detect_host_repo_root() {
     return 0
   fi
 
-  if [ -f /.dockerenv ] && command -v docker >/dev/null 2>&1; then
+  # Podman never creates /.dockerenv. Under the old test this branch never ran
+  # there, DUNE_HOST_REPO_ROOT stayed at the in-container path, and every
+  # helper container spawned afterwards was bind-mounted a path that does not
+  # exist on the host.
+  if dune_in_container && command -v docker >/dev/null 2>&1; then
     source="$(
       docker inspect redblink-dune-docker-console \
         --format '{{range .Mounts}}{{if eq .Destination "/repo"}}{{.Source}}{{end}}{{end}}' \
@@ -627,13 +633,19 @@ ensure_docker_access_for_console_rebuild() {
     return 0
   fi
 
-  echo "Self-update cannot continue because the current user cannot access Docker."
+  # The group that reaches the socket is the engine's, not always `docker`:
+  # on a Podman host there is no docker group at all, and the advice below is
+  # the difference between a fixable error and a dead end.
+  local engine_group="docker"
+  [ "$DUNE_ENGINE_KIND" = "podman" ] && engine_group="podman"
+
+  echo "Self-update cannot continue because the current user cannot access the container engine."
   echo
-  echo "The update needs Docker access to rebuild and restart the Dune Docker Console."
+  echo "The update needs engine access to rebuild and restart the Dune Docker Console."
   echo "Run this once, then fully log out and back in before retrying:"
-  echo "  sudo usermod -aG docker \"\$USER\""
+  echo "  sudo usermod -aG $engine_group \"\$USER\""
   echo
-  echo "After reconnecting, verify Docker access with:"
+  echo "After reconnecting, verify access with:"
   echo "  docker ps"
   exit 13
 }
@@ -1332,7 +1344,7 @@ rebuild_web_console_with_helper() {
   local helper_name
   helper_name="dune-console-self-update-$(date +%s)"
   local compose_project="$DUNE_COMPOSE_PROJECT_NAME"
-  local helper_image="${DUNE_SYSTEMD_HELPER_IMAGE:-redblink-dune-docker-console:dev}"
+  local helper_image="${DUNE_SYSTEMD_HELPER_IMAGE:-${DUNE_ENGINE_IMAGE_PREFIX}redblink-dune-docker-console:dev}"
 
   prepare_web_console_rebuild_env
 
@@ -1370,7 +1382,7 @@ rebuild_web_console_after_update() {
   log_file="runtime/generated/web-console-rebuild.log"
   echo
   echo "Rebuilding Dune Docker Console container: $service"
-  if { [ -n "${DUNE_CONTAINER_REPO_ROOT:-}" ] || [ -f /.dockerenv ]; } && [ "${DUNE_WEB_SELF_UPDATE_HELPER:-0}" != "1" ]; then
+  if { [ -n "${DUNE_CONTAINER_REPO_ROOT:-}" ] || dune_in_container; } && [ "${DUNE_WEB_SELF_UPDATE_HELPER:-0}" != "1" ]; then
     echo "The rebuild will continue in a helper container because this update is running from the web console."
     echo "Rebuild log: $log_file"
     rebuild_web_console_with_helper "$service" >"$log_file" 2>&1 || {
@@ -1389,7 +1401,7 @@ install_cli_command_after_update() {
     return 0
   fi
 
-  if [ -f /.dockerenv ]; then
+  if dune_in_container; then
     echo
     echo "The dune CLI command install was skipped because the update is running inside the web console container."
     echo "If the host does not have the dune command yet, run this once from the server folder:"

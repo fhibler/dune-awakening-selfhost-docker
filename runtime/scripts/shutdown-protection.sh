@@ -5,10 +5,39 @@ cd "$(dirname "$0")/../.."
 ROOT_DIR="$(pwd)"
 HOST_ROOT_DIR="${DUNE_HOST_REPO_ROOT:-$ROOT_DIR}"
 
+# shellcheck source=runtime/scripts/lib/engine.sh
+source runtime/scripts/lib/engine.sh
+
 STATE_FILE="runtime/generated/shutdown-protection.env"
 SERVICE_NAME="dune-awakening-shutdown-protection.service"
 SERVICE_FILE="/etc/systemd/system/$SERVICE_NAME"
 LOG_FILE="runtime/generated/shutdown-protection.log"
+
+# DefaultDependencies=no plus this ordering plus Before=shutdown.target is the
+# entire mechanism by which ExecStop gets to shut the game down before the
+# engine tears its containers apart. systemd treats `After=` on a unit that
+# does not exist as a silent no-op, so naming docker.service on a Podman host
+# would drop the guarantee and leave the world database to be torn down
+# mid-write -- the exact outcome this unit exists to prevent. Generated units
+# also run with a clean environment, so whatever the shell exported to reach
+# the engine has to be written into the file. The environment carries its own
+# newline and expands ahead of the next directive rather than on a line of its
+# own, because it is empty on Docker and the unit there has to stay byte for
+# byte what it is today.
+SYSTEMD_UNIT_ORDERING="$(dune_engine_systemd_unit_ordering)"
+SYSTEMD_SERVICE_ENVIRONMENT="$(dune_engine_systemd_service_environment)"
+if [ -n "$SYSTEMD_SERVICE_ENVIRONMENT" ]; then
+  SYSTEMD_SERVICE_ENVIRONMENT+=$'\n'
+fi
+
+# Splice into the privileged helpers that bind /:/host and chroot into it: that
+# mount must never be relabelled. See dune_engine_label_disable_args in
+# lib/engine.sh. Empty on Docker. shutdown-protection.sh does not source
+# runtime-env.sh, which builds the same array for the scripts that do.
+DUNE_ENGINE_LABEL_DISABLE_ARGS=()
+if [ -n "$(dune_engine_label_disable_args)" ]; then
+  DUNE_ENGINE_LABEL_DISABLE_ARGS=(--security-opt label=disable)
+fi
 
 usage() {
   cat <<'EOF'
@@ -68,7 +97,9 @@ docker_helper_image() {
 
 can_manage_host_systemd_with_docker() {
   command -v docker >/dev/null 2>&1 || return 1
-  [ -S /var/run/docker.sock ] || return 1
+  # Resolved, not assumed: a Podman host that skipped the socket drop-in would
+  # fail the hardcoded path silently and never install the unit.
+  [ -S "$DUNE_ENGINE_SOCKET" ] || return 1
   docker image inspect "$(docker_helper_image)" >/dev/null 2>&1 || return 1
 }
 
@@ -82,12 +113,11 @@ write_unit_to() {
 Description=Dune Docker Console clean shutdown protection
 Documentation=https://github.com/Red-Blink/dune-awakening-selfhost-docker
 DefaultDependencies=no
-Wants=docker.service
-After=docker.service
+$SYSTEMD_UNIT_ORDERING
 Before=shutdown.target reboot.target halt.target kexec.target
 
 [Service]
-Type=oneshot
+${SYSTEMD_SERVICE_ENVIRONMENT}Type=oneshot
 RemainAfterExit=yes
 WorkingDirectory=$exec_root
 ExecStart=/bin/true
@@ -109,6 +139,9 @@ install_unit_via_docker_host() {
 
   can_manage_host_systemd_with_docker || return 1
   docker run --rm --user 0:0 --privileged --pid=host --network=host \
+    "${DUNE_ENGINE_LABEL_DISABLE_ARGS[@]}" \
+    -e DUNE_SYSTEMD_UNIT_ORDERING="$SYSTEMD_UNIT_ORDERING" \
+    -e DUNE_SYSTEMD_SERVICE_ENVIRONMENT="$SYSTEMD_SERVICE_ENVIRONMENT" \
     -e DUNE_HOST_REPO_ROOT="$HOST_ROOT_DIR" \
     -v /:/host \
     --entrypoint bash \
@@ -121,12 +154,11 @@ install_unit_via_docker_host() {
 Description=Dune Docker Console clean shutdown protection
 Documentation=https://github.com/Red-Blink/dune-awakening-selfhost-docker
 DefaultDependencies=no
-Wants=docker.service
-After=docker.service
+${DUNE_SYSTEMD_UNIT_ORDERING}
 Before=shutdown.target reboot.target halt.target kexec.target
 
 [Service]
-Type=oneshot
+${DUNE_SYSTEMD_SERVICE_ENVIRONMENT}Type=oneshot
 RemainAfterExit=yes
 WorkingDirectory=${DUNE_HOST_REPO_ROOT}
 ExecStart=/bin/true
@@ -147,6 +179,7 @@ disable_unit_via_docker_host() {
 
   can_manage_host_systemd_with_docker || return 1
   docker run --rm --user 0:0 --privileged --pid=host --network=host \
+    "${DUNE_ENGINE_LABEL_DISABLE_ARGS[@]}" \
     -v /:/host \
     --entrypoint bash \
     "$image" -lc '
@@ -162,6 +195,7 @@ remove_unit_via_docker_host() {
 
   can_manage_host_systemd_with_docker || return 1
   docker run --rm --user 0:0 --privileged --pid=host --network=host \
+    "${DUNE_ENGINE_LABEL_DISABLE_ARGS[@]}" \
     -v /:/host \
     --entrypoint bash \
     "$image" -lc '
@@ -178,6 +212,7 @@ show_host_status_via_docker() {
 
   can_manage_host_systemd_with_docker || return 1
   docker run --rm --user 0:0 --privileged --pid=host --network=host \
+    "${DUNE_ENGINE_LABEL_DISABLE_ARGS[@]}" \
     -v /:/host \
     --entrypoint bash \
     "$image" -lc '

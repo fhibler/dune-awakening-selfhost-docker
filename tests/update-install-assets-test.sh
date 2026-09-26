@@ -24,6 +24,7 @@ for script in update.sh runtime-env.sh steamcmd-signals.sh fls-signals.sh \
   [ ! -f "$repo_root/runtime/scripts/$script" ] \
     || cp "$repo_root/runtime/scripts/$script" "$project/runtime/scripts/$script"
 done
+cp "$repo_root/runtime/scripts/lib/engine.sh" "$project/runtime/scripts/lib/engine.sh"
 cp "$repo_root/runtime/scripts/lib/secrets.sh" "$project/runtime/scripts/lib/secrets.sh"
 cp "$repo_root/runtime/scripts/lib/secrets_aead.py" "$project/runtime/scripts/lib/secrets_aead.py"
 

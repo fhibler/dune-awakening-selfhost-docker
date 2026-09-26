@@ -9,6 +9,12 @@ trap 'rm -rf "$test_root"' EXIT
 bin_dir="$test_root/bin"
 mkdir -p "$bin_dir"
 
+# db.sh sources runtime/scripts/lib/engine.sh, whose detection probe would
+# otherwise run `docker version` through the mock below -- noise in the call log
+# for the cases that assert the engine was never reached. This suite exercises
+# the Docker leg; saying so pins it without the probe.
+export DUNE_CONTAINER_ENGINE=docker
+
 cat > "$bin_dir/docker" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -106,9 +112,10 @@ STAGE2_ENC_PAYLOAD="enc:v2:1:cGxhY2Vob2xkZXItd3JhcHBlZC1kZWs=:cGxhY2Vob2xkZXItY2
 seed_repo_tree() {
   local root="$1"
 
-  mkdir -p "$root/runtime/scripts" "$root/runtime/generated" "$root/runtime/secrets" \
+  mkdir -p "$root/runtime/scripts/lib" "$root/runtime/generated" "$root/runtime/secrets" \
     "$root/runtime/backups/system"
   cp runtime/scripts/db.sh "$root/runtime/scripts/db.sh"
+  cp runtime/scripts/lib/engine.sh "$root/runtime/scripts/lib/engine.sh"
   cp runtime/scripts/host-file-ownership.sh "$root/runtime/scripts/host-file-ownership.sh"
   [ ! -f runtime/scripts/env-file.sh ] || cp runtime/scripts/env-file.sh "$root/runtime/scripts/env-file.sh"
   [ ! -f runtime/scripts/battlegroup-identity.sh ] || cp runtime/scripts/battlegroup-identity.sh "$root/runtime/scripts/battlegroup-identity.sh"

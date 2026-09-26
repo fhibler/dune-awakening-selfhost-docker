@@ -4,6 +4,10 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 
 . runtime/scripts/compose-project.sh
+# `docker compose exec` below has to reach the same socket the rest of the
+# stack uses; on a Podman host without the drop-in that is not the CLI default.
+# shellcheck source=runtime/scripts/lib/engine.sh
+. runtime/scripts/lib/engine.sh
 DUNE_COMPOSE_PROJECT_NAME="$(dune_resolve_compose_project_name "$(pwd -P)")"
 export DUNE_COMPOSE_PROJECT_NAME
 export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-$DUNE_COMPOSE_PROJECT_NAME}"

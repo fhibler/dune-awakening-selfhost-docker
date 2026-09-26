@@ -19,6 +19,9 @@ cd "$(dirname "$0")/../.."
 # servers, and it needs the host-path translation environment because
 # spawn-server.sh refuses to build bind mounts without it.
 
+# shellcheck source=runtime/scripts/lib/engine.sh
+source runtime/scripts/lib/engine.sh
+
 LOG_FILE="runtime/generated/deferred-reconcile.log"
 HELPER_NAME="${DUNE_DEFERRED_RECONCILE_CONTAINER:-dune-deferred-reconcile}"
 
@@ -55,7 +58,7 @@ if ! docker run -d --rm --name "$HELPER_NAME" \
   --network host \
   --user "${DUNE_HOST_UID:-0}:${DUNE_HOST_GID:-0}" \
   --group-add "${DOCKER_SOCKET_GID:-0}" \
-  -v "$host_root:/repo" \
+  -v "$(dune_engine_mount "$host_root" /repo)" \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -w /repo \
   -e HOME=/tmp/dune-deferred-home \

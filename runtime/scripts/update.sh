@@ -30,6 +30,19 @@ AUTO_DEFAULT_INTERVAL_MINUTES="${DUNE_AUTO_UPDATE_INTERVAL_MINUTES:-60}"
 AUTO_PENDING_FILE="${DUNE_AUTO_UPDATE_PENDING_FILE:-runtime/generated/update-auto-pending.env}"
 UPDATE_CHECK_CACHE_FILE="runtime/generated/game-update-check.json"
 
+# systemd treats `After=` on a unit that does not exist as a silent no-op, so a
+# unit generated on a Podman host that names docker.service loses its ordering
+# guarantee with nothing logged anywhere. Generated units also run with a clean
+# environment, so whatever the shell exported to reach the engine has to be
+# written into the file. The environment carries its own newline and expands
+# ahead of the next directive rather than on a line of its own, because it is
+# empty on Docker and the unit there has to stay byte for byte what it is today.
+SYSTEMD_UNIT_ORDERING="$(dune_engine_systemd_unit_ordering network-online.target)"
+SYSTEMD_SERVICE_ENVIRONMENT="$(dune_engine_systemd_service_environment)"
+if [ -n "$SYSTEMD_SERVICE_ENVIRONMENT" ]; then
+  SYSTEMD_SERVICE_ENVIRONMENT+=$'\n'
+fi
+
 positive_integer_or_default() {
   local value="$1"
   local fallback="$2"
@@ -304,11 +317,10 @@ write_auto_units_to() {
   cat > "$systemd_dir/$AUTO_SERVICE_NAME" <<EOF
 [Unit]
 Description=Dune Awakening self-host auto update
-Wants=docker.service
-After=network-online.target docker.service
+$SYSTEMD_UNIT_ORDERING
 
 [Service]
-Type=oneshot
+${SYSTEMD_SERVICE_ENVIRONMENT}Type=oneshot
 WorkingDirectory=$exec_root
 ExecStart=$exec_root/runtime/scripts/update.sh auto run
 TimeoutStartSec=infinity
@@ -336,7 +348,9 @@ docker_helper_image() {
 
 can_manage_host_systemd_with_docker() {
   command -v docker >/dev/null 2>&1 || return 1
-  [ -S /var/run/docker.sock ] || return 1
+  # Resolved, not assumed: a Podman host that skipped the socket drop-in would
+  # fail the hardcoded path silently and never install the timer.
+  [ -S "$DUNE_ENGINE_SOCKET" ] || return 1
   docker image inspect "$(docker_helper_image)" >/dev/null 2>&1 || return 1
 }
 
@@ -346,7 +360,11 @@ install_auto_units_via_docker_host() {
   image="$(docker_helper_image)"
 
   can_manage_host_systemd_with_docker || return 1
+  # /:/host is never relabelled; see dune_engine_label_disable_args. Empty on Docker.
   docker run --rm --user 0:0 --privileged --pid=host --network=host \
+    "${DUNE_ENGINE_LABEL_DISABLE_ARGS[@]}" \
+    -e DUNE_SYSTEMD_UNIT_ORDERING="$SYSTEMD_UNIT_ORDERING" \
+    -e DUNE_SYSTEMD_SERVICE_ENVIRONMENT="$SYSTEMD_SERVICE_ENVIRONMENT" \
     -e DUNE_AUTO_UPDATE_INTERVAL_MINUTES="$interval_minutes" \
     -e DUNE_HOST_REPO_ROOT="$HOST_ROOT_DIR" \
     -v /:/host \
@@ -358,11 +376,10 @@ install_auto_units_via_docker_host() {
       cat > "$systemd_dir/dune-awakening-auto-update.service" <<EOF
 [Unit]
 Description=Dune Awakening self-host auto update
-Wants=docker.service
-After=network-online.target docker.service
+${DUNE_SYSTEMD_UNIT_ORDERING}
 
 [Service]
-Type=oneshot
+${DUNE_SYSTEMD_SERVICE_ENVIRONMENT}Type=oneshot
 WorkingDirectory=${DUNE_HOST_REPO_ROOT}
 ExecStart=${DUNE_HOST_REPO_ROOT}/runtime/scripts/update.sh auto run
 TimeoutStartSec=infinity
@@ -392,6 +409,7 @@ disable_auto_units_via_docker_host() {
 
   can_manage_host_systemd_with_docker || return 1
   docker run --rm --user 0:0 --privileged --pid=host --network=host \
+    "${DUNE_ENGINE_LABEL_DISABLE_ARGS[@]}" \
     -v /:/host \
     --entrypoint bash \
     "$image" -lc '
@@ -410,6 +428,7 @@ show_auto_timer_status_via_docker() {
 
   can_manage_host_systemd_with_docker || return 1
   docker run --rm --user 0:0 --privileged --pid=host --network=host \
+    "${DUNE_ENGINE_LABEL_DISABLE_ARGS[@]}" \
     -e DUNE_AUTO_UPDATE_ENABLED="${DUNE_AUTO_UPDATE_ENABLED:-0}" \
     -e DUNE_AUTO_UPDATE_INTERVAL_MINUTES="${DUNE_AUTO_UPDATE_INTERVAL_MINUTES:-$AUTO_DEFAULT_INTERVAL_MINUTES}" \
     -e DUNE_AUTO_UPDATE_APPLY_ENABLED="${DUNE_AUTO_UPDATE_APPLY_ENABLED:-1}" \

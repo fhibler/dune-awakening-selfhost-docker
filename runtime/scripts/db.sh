@@ -6,6 +6,8 @@ ROOT_DIR="$(pwd)"
 HOST_ROOT_DIR="${DUNE_HOST_REPO_ROOT:-$ROOT_DIR}"
 # shellcheck source=runtime/scripts/env-file.sh
 source runtime/scripts/env-file.sh
+# shellcheck source=runtime/scripts/lib/engine.sh
+source runtime/scripts/lib/engine.sh
 
 BACKUP_DIR_DEFAULT="runtime/backups/db"
 AUTO_STATE_FILE="runtime/generated/db-backup.env"
@@ -14,6 +16,28 @@ AUTO_TIMER_FILE="/etc/systemd/system/dune-awakening-db-backup.timer"
 PENDING_TRANSFER_FILE="runtime/generated/pending-character-transfers.tsv"
 BATTLEGROUP_RESTORE_FILE="runtime/generated/battlegroup-restore-point.env"
 DB_RESTORE_MAINTENANCE_FILE="${DUNE_DB_RESTORE_MAINTENANCE_FILE:-runtime/generated/db-restore-maintenance}"
+
+# systemd treats `After=` on a unit that does not exist as a silent no-op, so a
+# unit generated on a Podman host that names docker.service loses its ordering
+# guarantee with nothing logged anywhere. Generated units also run with a clean
+# environment, so whatever the shell exported to reach the engine has to be
+# written into the file. The environment carries its own newline and expands
+# ahead of the next directive rather than on a line of its own, because it is
+# empty on Docker and the unit there has to stay byte for byte what it is today.
+SYSTEMD_UNIT_ORDERING="$(dune_engine_systemd_unit_ordering network-online.target)"
+SYSTEMD_SERVICE_ENVIRONMENT="$(dune_engine_systemd_service_environment)"
+if [ -n "$SYSTEMD_SERVICE_ENVIRONMENT" ]; then
+  SYSTEMD_SERVICE_ENVIRONMENT+=$'\n'
+fi
+
+# Splice into the privileged helpers that bind /:/host and chroot into it: that
+# mount must never be relabelled. See dune_engine_label_disable_args in
+# lib/engine.sh. Empty on Docker. db.sh does not source runtime-env.sh, which
+# builds the same array for the scripts that do.
+DUNE_ENGINE_LABEL_DISABLE_ARGS=()
+if [ -n "$(dune_engine_label_disable_args)" ]; then
+  DUNE_ENGINE_LABEL_DISABLE_ARGS=(--security-opt label=disable)
+fi
 
 begin_db_restore_maintenance() {
   mkdir -p "$(dirname "$DB_RESTORE_MAINTENANCE_FILE")"
@@ -3444,7 +3468,9 @@ docker_helper_image() {
 
 can_manage_host_systemd_with_docker() {
   command -v docker >/dev/null 2>&1 || return 1
-  [ -S /var/run/docker.sock ] || return 1
+  # Resolved, not assumed: a Podman host that skipped the socket drop-in would
+  # fail the hardcoded path silently and never install the timer.
+  [ -S "$DUNE_ENGINE_SOCKET" ] || return 1
   docker image inspect "$(docker_helper_image)" >/dev/null 2>&1 || return 1
 }
 
@@ -3507,11 +3533,10 @@ write_auto_units_to() {
   cat > "$systemd_dir/dune-awakening-db-backup.service" <<EOF
 [Unit]
 Description=Dune Awakening battlegroup database backup
-Wants=docker.service
-After=network-online.target docker.service
+$SYSTEMD_UNIT_ORDERING
 
 [Service]
-Type=oneshot
+${SYSTEMD_SERVICE_ENVIRONMENT}Type=oneshot
 WorkingDirectory=$exec_root
 Environment=DB_BACKUP_PRUNE_AFTER_SUCCESS=1
 Environment=DB_BACKUP_ORIGIN=automatic
@@ -3548,6 +3573,9 @@ install_auto_units_via_docker_host() {
 
   can_manage_host_systemd_with_docker || return 1
   docker run --rm --user 0:0 --privileged --pid=host --network=host \
+    "${DUNE_ENGINE_LABEL_DISABLE_ARGS[@]}" \
+    -e DUNE_SYSTEMD_UNIT_ORDERING="$SYSTEMD_UNIT_ORDERING" \
+    -e DUNE_SYSTEMD_SERVICE_ENVIRONMENT="$SYSTEMD_SERVICE_ENVIRONMENT" \
     -e DB_AUTO_BACKUP_TIME="$backup_time" \
     -e DB_AUTO_BACKUP_INTERVAL_HOURS="$interval_hours" \
     -e DUNE_HOST_REPO_ROOT="$HOST_ROOT_DIR" \
@@ -3560,11 +3588,10 @@ install_auto_units_via_docker_host() {
       cat > "$systemd_dir/dune-awakening-db-backup.service" <<EOF
 [Unit]
 Description=Dune Awakening battlegroup database backup
-Wants=docker.service
-After=network-online.target docker.service
+${DUNE_SYSTEMD_UNIT_ORDERING}
 
 [Service]
-Type=oneshot
+${DUNE_SYSTEMD_SERVICE_ENVIRONMENT}Type=oneshot
 WorkingDirectory=${DUNE_HOST_REPO_ROOT}
 Environment=DB_BACKUP_PRUNE_AFTER_SUCCESS=1
 Environment=DB_BACKUP_ORIGIN=automatic
@@ -3601,6 +3628,7 @@ disable_auto_units_via_docker_host() {
 
   can_manage_host_systemd_with_docker || return 1
   docker run --rm --user 0:0 --privileged --pid=host --network=host \
+    "${DUNE_ENGINE_LABEL_DISABLE_ARGS[@]}" \
     -v /:/host \
     --entrypoint bash \
     "$image" -lc '
@@ -3617,6 +3645,7 @@ show_auto_timer_status_via_docker_host() {
 
   can_manage_host_systemd_with_docker || return 1
   docker run --rm --user 0:0 --privileged --pid=host --network=host \
+    "${DUNE_ENGINE_LABEL_DISABLE_ARGS[@]}" \
     -v /:/host \
     --entrypoint bash \
     "$image" -lc '

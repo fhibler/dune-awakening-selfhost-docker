@@ -17,6 +17,7 @@ cp "$repo_root/runtime/scripts/steamcmd-signals.sh" "$test_root/project/runtime/
 cp "$repo_root/runtime/scripts/fls-signals.sh" "$test_root/project/runtime/scripts/fls-signals.sh"
 # runtime-env.sh sources this as of the age-based secrets library
 # Stage 2 rollout
+cp "$repo_root/runtime/scripts/lib/engine.sh" "$test_root/project/runtime/scripts/lib/engine.sh"
 cp "$repo_root/runtime/scripts/lib/secrets.sh" "$test_root/project/runtime/scripts/lib/secrets.sh"
 cp "$repo_root/runtime/scripts/lib/secrets_aead.py" "$test_root/project/runtime/scripts/lib/secrets_aead.py"
 

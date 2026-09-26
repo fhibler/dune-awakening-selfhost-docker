@@ -27,6 +27,19 @@ TIMER_FILE="/etc/systemd/system/$TIMER_NAME"
 WARNING_SERVICE_FILE="/etc/systemd/system/$WARNING_SERVICE_NAME"
 WARNING_TIMER_FILE="/etc/systemd/system/$WARNING_TIMER_NAME"
 
+# systemd treats `After=` on a unit that does not exist as a silent no-op, so a
+# unit generated on a Podman host that names docker.service loses its ordering
+# guarantee with nothing logged anywhere. Generated units also run with a clean
+# environment, so whatever the shell exported to reach the engine has to be
+# written into the file. The environment carries its own newline and expands
+# ahead of the next directive rather than on a line of its own, because it is
+# empty on Docker and the unit there has to stay byte for byte what it is today.
+SYSTEMD_UNIT_ORDERING="$(dune_engine_systemd_unit_ordering network-online.target)"
+SYSTEMD_SERVICE_ENVIRONMENT="$(dune_engine_systemd_service_environment)"
+if [ -n "$SYSTEMD_SERVICE_ENVIRONMENT" ]; then
+  SYSTEMD_SERVICE_ENVIRONMENT+=$'\n'
+fi
+
 usage() {
   cat <<'EOF'
 Usage:
@@ -194,11 +207,10 @@ write_units_to() {
   cat > "$systemd_dir/$SERVICE_NAME" <<EOF
 [Unit]
 Description=Dune Awakening scheduled battlegroup restart
-Wants=docker.service
-After=network-online.target docker.service
+$SYSTEMD_UNIT_ORDERING
 
 [Service]
-Type=oneshot
+${SYSTEMD_SERVICE_ENVIRONMENT}Type=oneshot
 User=$HOST_SERVICE_UID
 Group=$HOST_SERVICE_GID
 WorkingDirectory=$exec_root
@@ -209,11 +221,10 @@ EOF
   cat > "$systemd_dir/$WARNING_SERVICE_NAME" <<EOF
 [Unit]
 Description=Dune Awakening scheduled restart warning
-Wants=docker.service
-After=network-online.target docker.service
+$SYSTEMD_UNIT_ORDERING
 
 [Service]
-Type=oneshot
+${SYSTEMD_SERVICE_ENVIRONMENT}Type=oneshot
 User=$HOST_SERVICE_UID
 Group=$HOST_SERVICE_GID
 WorkingDirectory=$exec_root
@@ -259,7 +270,9 @@ docker_helper_image() {
 
 can_manage_host_systemd_with_docker() {
   command -v docker >/dev/null 2>&1 || return 1
-  [ -S /var/run/docker.sock ] || return 1
+  # Resolved, not assumed: a Podman host that skipped the socket drop-in would
+  # fail the hardcoded path silently and never install the timer.
+  [ -S "$DUNE_ENGINE_SOCKET" ] || return 1
   docker image inspect "$(docker_helper_image)" >/dev/null 2>&1 || return 1
 }
 
@@ -271,7 +284,11 @@ install_units_via_docker_host() {
   image="$(docker_helper_image)"
 
   can_manage_host_systemd_with_docker || return 1
+  # /:/host is never relabelled; see dune_engine_label_disable_args. Empty on Docker.
   docker run --rm --user 0:0 --privileged --pid=host --network=host \
+    "${DUNE_ENGINE_LABEL_DISABLE_ARGS[@]}" \
+    -e DUNE_SYSTEMD_UNIT_ORDERING="$SYSTEMD_UNIT_ORDERING" \
+    -e DUNE_SYSTEMD_SERVICE_ENVIRONMENT="$SYSTEMD_SERVICE_ENVIRONMENT" \
     -e DUNE_SCHEDULED_RESTART_TIME="$restart_time" \
     -e DUNE_SCHEDULED_RESTART_NOTIFY_MINUTES="$notify_minutes" \
     -e DUNE_SCHEDULED_RESTART_NOTIFY_TIME="$notify_time" \
@@ -287,11 +304,10 @@ install_units_via_docker_host() {
       cat > "$systemd_dir/dune-awakening-scheduled-restart.service" <<EOF
 [Unit]
 Description=Dune Awakening scheduled battlegroup restart
-Wants=docker.service
-After=network-online.target docker.service
+${DUNE_SYSTEMD_UNIT_ORDERING}
 
 [Service]
-Type=oneshot
+${DUNE_SYSTEMD_SERVICE_ENVIRONMENT}Type=oneshot
 User=${DUNE_HOST_SERVICE_UID}
 Group=${DUNE_HOST_SERVICE_GID}
 WorkingDirectory=${DUNE_HOST_REPO_ROOT}
@@ -301,11 +317,10 @@ EOF
       cat > "$systemd_dir/dune-awakening-scheduled-restart-warning.service" <<EOF
 [Unit]
 Description=Dune Awakening scheduled restart warning
-Wants=docker.service
-After=network-online.target docker.service
+${DUNE_SYSTEMD_UNIT_ORDERING}
 
 [Service]
-Type=oneshot
+${DUNE_SYSTEMD_SERVICE_ENVIRONMENT}Type=oneshot
 User=${DUNE_HOST_SERVICE_UID}
 Group=${DUNE_HOST_SERVICE_GID}
 WorkingDirectory=${DUNE_HOST_REPO_ROOT}
@@ -349,6 +364,7 @@ disable_units_via_docker_host() {
 
   can_manage_host_systemd_with_docker || return 1
   docker run --rm --user 0:0 --privileged --pid=host --network=host \
+    "${DUNE_ENGINE_LABEL_DISABLE_ARGS[@]}" \
     -v /:/host \
     --entrypoint bash \
     "$image" -lc '
@@ -365,6 +381,7 @@ show_host_timer_status_via_docker() {
 
   can_manage_host_systemd_with_docker || return 1
   docker run --rm --user 0:0 --privileged --pid=host --network=host \
+    "${DUNE_ENGINE_LABEL_DISABLE_ARGS[@]}" \
     -v /:/host \
     --entrypoint bash \
     "$image" -lc '
