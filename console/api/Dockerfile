@@ -1,4 +1,4 @@
-FROM node:20-trixie AS web-build
+FROM docker.io/library/node:20-trixie AS web-build
 WORKDIR /app/web
 COPY console/web/package.json ./
 COPY console/web/package-lock.json ./
@@ -8,7 +8,7 @@ COPY runtime/data/admin-skill-modules.json /runtime/data/admin-skill-modules.jso
 COPY console/web ./
 RUN npm run build
 
-FROM node:20-trixie
+FROM docker.io/library/node:20-trixie
 LABEL io.github.red-blink.dune-selfhost.component="console"
 WORKDIR /app
 ENV NODE_ENV=production

@@ -7,7 +7,10 @@ services:
       dockerfile: console/api/Dockerfile
     image: redblink-dune-docker-console:dev
     container_name: redblink-dune-docker-console
-    restart: unless-stopped
+    # podman-restart.service revives only `always`, so a literal
+    # `unless-stopped` console never comes back after a reboot. The value
+    # comes from runtime/scripts/lib/engine.sh; the default is Docker's.
+    restart: "${DUNE_ENGINE_RESTART_POLICY:-unless-stopped}"
     logging:
       driver: json-file
       options:
@@ -102,6 +105,9 @@ services:
     volumes:
       - "${DUNE_HOST_REPO_ROOT:-.}:/repo"
       - /etc/localtime:/etc/localtime:ro
-      # WARNING: mounting the Docker socket gives this container broad control
-      # over the host Docker daemon. Expose the web admin only to trusted admins.
-      - /var/run/docker.sock:/var/run/docker.sock
+      # WARNING: mounting the engine socket gives this container broad control
+      # over the host container engine. Expose the web admin only to trusted
+      # admins. Source side only: a Podman host that skipped the podman.socket
+      # drop-in keeps its API socket at /run/podman/podman.sock, and the
+      # container path stays put so the CLI inside needs no DOCKER_HOST.
+      - "${DUNE_ENGINE_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock"

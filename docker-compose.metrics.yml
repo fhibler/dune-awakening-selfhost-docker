@@ -1,8 +1,13 @@
 services:
+  # Every restart policy below is interpolated rather than literal:
+  # podman-restart.service revives only `always`, so an `unless-stopped`
+  # metrics stack silently stays down after a reboot. metrics-stack.sh sources
+  # runtime/scripts/lib/engine.sh, which exports the per-engine value; the
+  # defaults here keep a bare `docker compose` call identical to Docker's.
   dune-prometheus:
     image: ${METRICS_PROMETHEUS_IMAGE:-quay.io/prometheus/prometheus:v3.5.0}
     container_name: dune-prometheus
-    restart: unless-stopped
+    restart: "${DUNE_ENGINE_RESTART_POLICY:-unless-stopped}"
     networks:
       - dune-net
     ports:
@@ -25,12 +30,16 @@ services:
   dune-node-exporter:
     image: ${METRICS_NODE_EXPORTER_IMAGE:-quay.io/prometheus/node-exporter:v1.9.1}
     container_name: dune-node-exporter
-    restart: unless-stopped
+    restart: "${DUNE_ENGINE_RESTART_POLICY:-unless-stopped}"
     networks:
       - dune-net
     command:
       - --path.rootfs=/host
-      - --collector.filesystem.mount-points-exclude=^/(dev|proc|sys|run/docker/netns|var/lib/docker/.+)($$|/)
+      # The engine's own mount namespaces and image store are excluded from
+      # the filesystem collector; both live elsewhere on Podman, where the
+      # Docker-shaped regex would match nothing and every per-container mount
+      # would be scraped. metrics-stack.sh exports the engine's paths.
+      - --collector.filesystem.mount-points-exclude=^(/dev|/proc|/sys|${DUNE_ENGINE_NETNS_DIR:-/run/docker/netns}|${DUNE_ENGINE_STORAGE_DIR:-/var/lib/docker}/.+)($$|/)
       - --collector.filesystem.fs-types-exclude=^(autofs|binfmt_misc|bpf|cgroup2?|configfs|debugfs|devpts|devtmpfs|fusectl|hugetlbfs|mqueue|overlay|proc|pstore|rpc_pipefs|securityfs|sysfs|tracefs)$$
     pid: host
     volumes:
@@ -42,7 +51,7 @@ services:
   dune-cadvisor:
     image: ${METRICS_CADVISOR_IMAGE:-gcr.io/cadvisor/cadvisor:v0.52.1}
     container_name: dune-cadvisor
-    restart: unless-stopped
+    restart: "${DUNE_ENGINE_RESTART_POLICY:-unless-stopped}"
     networks:
       - dune-net
     privileged: true
@@ -54,13 +63,17 @@ services:
       - /:/rootfs:ro
       - /var/run:/var/run:ro
       - /sys:/sys:ro
-      - /var/lib/docker:/var/lib/docker:ro
+      # cAdvisor reads the storage root the engine reports through
+      # /info. On Podman that is /var/lib/containers/storage, and the Docker
+      # path does not exist -- the bind would silently create an empty
+      # directory at the host root and cAdvisor would report nothing.
+      - "${DUNE_ENGINE_STORAGE_DIR:-/var/lib/docker}:${DUNE_ENGINE_STORAGE_DIR:-/var/lib/docker}:ro"
       - /dev/disk:/dev/disk:ro
 
   dune-postgres-exporter:
     image: ${METRICS_POSTGRES_EXPORTER_IMAGE:-quay.io/prometheuscommunity/postgres-exporter:v0.17.1}
     container_name: dune-postgres-exporter
-    restart: unless-stopped
+    restart: "${DUNE_ENGINE_RESTART_POLICY:-unless-stopped}"
     networks:
       - dune-net
     environment:

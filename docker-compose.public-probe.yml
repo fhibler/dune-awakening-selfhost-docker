@@ -6,7 +6,9 @@ services:
       context: ./runtime/public-probe
     image: dune-public-probe:dev
     container_name: dune-public-probe
-    restart: unless-stopped
+    # podman-restart.service revives only `always`; see
+    # runtime/scripts/lib/engine.sh. The default is Docker's policy.
+    restart: "${DUNE_ENGINE_RESTART_POLICY:-unless-stopped}"
     environment:
       DUNE_PUBLIC_PROBE_SERVER_ID: "${DUNE_PUBLIC_PROBE_SERVER_ID:?Probe server ID is required}"
       DUNE_PUBLIC_PROBE_SECRET: "${DUNE_PUBLIC_PROBE_SECRET:?Probe secret is required}"

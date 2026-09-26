@@ -4,7 +4,11 @@ services:
       context: ./orchestrator
     image: dune-orchestrator:dev
     container_name: dune-orchestrator
-    restart: unless-stopped
+    # Interpolated, not literal: podman-restart.service revives only
+    # `always`, so an `unless-stopped` orchestrator stays down after a reboot
+    # with nothing logged anywhere. runtime/scripts/lib/engine.sh exports the
+    # per-engine value; the default keeps Docker exactly as it was.
+    restart: "${DUNE_ENGINE_RESTART_POLICY:-unless-stopped}"
     network_mode: host
     group_add:
       - "${DOCKER_SOCKET_GID:-0}"
@@ -18,7 +22,10 @@ services:
       DUNE_STEAM_DIR: "/srv/dune/steam"
       DUNE_GENERATED_DIR: "/srv/dune/generated"
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
+      # Source side only: a Podman host that skipped the podman.socket
+      # drop-in keeps its API socket at /run/podman/podman.sock. The container
+      # path stays put so the CLI inside needs no DOCKER_HOST.
+      - "${DUNE_ENGINE_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock"
       - dune-server:/srv/dune/server
       - dune-steam:/srv/dune/steam
       - dune-cache:/srv/dune/cache

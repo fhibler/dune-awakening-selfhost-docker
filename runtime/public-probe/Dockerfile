@@ -1,4 +1,4 @@
-FROM golang:1.25-alpine AS build
+FROM docker.io/library/golang:1.25-alpine AS build
 
 WORKDIR /src
 COPY go.mod go.sum ./
@@ -7,7 +7,7 @@ COPY *.go ./
 RUN go test ./... \
     && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/dune-public-probe .
 
-FROM alpine:3.22
+FROM docker.io/library/alpine:3.22
 
 RUN apk add --no-cache ca-certificates \
     && addgroup -S -g 10001 probe \
