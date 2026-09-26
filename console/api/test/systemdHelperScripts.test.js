@@ -29,6 +29,62 @@ test("host systemd helpers explicitly run as root", () => {
   }
 });
 
+// Every place that binds the host root and chroots into it. The count is the
+// number of such mounts in the file, not the number of functions.
+const hostRootHelpers = new Map([
+  ["runtime/scripts/restart-schedule.sh", 3],
+  ["runtime/scripts/ip-change-restart.sh", 3],
+  ["runtime/scripts/shutdown-protection.sh", 4],
+  ["runtime/scripts/db.sh", 3],
+  ["runtime/scripts/update.sh", 3],
+  ["runtime/scripts/memory-swap.sh", 1]
+]);
+
+// Collapse shell line continuations so one invocation is one string.
+const invocationsOf = (source) =>
+  source
+    .replace(/\\\n\s*/g, " ")
+    .split("\n")
+    .filter((line) => line.includes("docker run --rm") && line.includes("--privileged"));
+
+test("host-root helpers exempt the bind from SELinux relabelling", () => {
+  for (const [relativePath, expectedMounts] of hostRootHelpers) {
+    const source = readFileSync(resolve(repoRoot, relativePath), "utf8");
+
+    // The splice expands to nothing unless something built the array.
+    assert.ok(
+      /^\s*(\.|source) runtime\/scripts\/runtime-env\.sh/m.test(source) ||
+        /^DUNE_ENGINE_LABEL_DISABLE_ARGS=\(\)/m.test(source),
+      `${relativePath} splices DUNE_ENGINE_LABEL_DISABLE_ARGS without defining it`);
+
+    const helpers = invocationsOf(source).filter((line) => line.includes("-v /:/host"));
+    assert.equal(helpers.length, expectedMounts, `${relativePath} host-root mount count changed`);
+
+    for (const helper of helpers) {
+      // Podman relabels bind mounts on request, and a request on / would
+      // rewrite the SELinux context of the whole host filesystem. These mounts
+      // opt out instead. Docker has nothing to opt out of, where the splice is
+      // an empty array.
+      assert.match(helper, /"\$\{DUNE_ENGINE_LABEL_DISABLE_ARGS\[@\]\}"/,
+        `${relativePath} must disable relabelling on its host-root bind`);
+      assert.match(helper, /-v \/:\/host /,
+        `${relativePath} must not add mount options to its host-root bind`);
+    }
+  }
+});
+
+test("generated units never hardcode the Docker engine unit", () => {
+  for (const relativePath of helperScripts.keys()) {
+    const source = readFileSync(resolve(repoRoot, relativePath), "utf8");
+
+    // systemd ignores an ordering dependency on a unit that does not exist
+    // without saying so, so a hardcoded docker.service is a guarantee that
+    // disappears silently on a Podman host. lib/engine.sh names the right one.
+    assert.doesNotMatch(source, /^(Wants|After|Requires|BindsTo)=.*docker\.service/m,
+      `${relativePath} must order its generated units through dune_engine_systemd_unit_ordering`);
+  }
+});
+
 test("scheduled restart jobs run as the host checkout owner", () => {
   const source = readFileSync(resolve(repoRoot, "runtime/scripts/restart-schedule.sh"), "utf8");
 

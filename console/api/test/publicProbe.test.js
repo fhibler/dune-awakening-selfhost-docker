@@ -40,7 +40,10 @@ test("public probe uses host ICE listeners without Docker port publishing and ru
 
 test("public probe image runs as an unprivileged dedicated user", () => {
   const dockerfile = readFileSync(resolve(repoRoot, "runtime/public-probe/Dockerfile"), "utf8");
-  assert.match(dockerfile, /FROM golang:1\.25-alpine AS build/);
+  // Fully qualified, not a short name: Podman resolves an unqualified base
+  // image against unqualified-search-registries, which is host configuration
+  // a build cannot see and may resolve to a different image or fail outright.
+  assert.match(dockerfile, /FROM docker\.io\/library\/golang:1\.25-alpine AS build/);
   assert.match(dockerfile, /USER probe/);
   assert.match(dockerfile, /CGO_ENABLED=0/);
   assert.match(dockerfile, /RUN go test \.\/\.\.\./);

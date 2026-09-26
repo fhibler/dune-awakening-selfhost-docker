@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { isAbsolute, relative, sep } from "node:path";
+import { containerEngine } from "../engine.js";
 
 const MAX_OUTPUT_BYTES = 1024 * 1024;
 
@@ -8,6 +9,7 @@ export async function collectContainerHealth(options = {}) {
   if (!projectName) return { containers: [], error: "The Dune Compose project name is not configured." };
 
   const run = options.run || execFileText;
+  const engine = options.engine || containerEngine();
   const hostRoot = String(options.hostRoot ?? process.env.DUNE_HOST_REPO_ROOT ?? "").trim();
   try {
     const rows = parseJsonLines(await run("docker", ["ps", "--all", "--no-trunc", "--format", "{{json .}}"]));
@@ -28,17 +30,24 @@ export async function collectContainerHealth(options = {}) {
     const statusOutput = selected.map(row => JSON.stringify(row)).join("\n");
     const containerIds = selected.filter(row => row.State === "running").map(row => row.ID);
     if (!containerIds.length) return { containers: mergeContainerHealth("", statusOutput) };
+    // Podman's compat endpoint answers a one-shot stats request with a single
+    // sample and a zeroed precpu baseline, so the CLI's delta arithmetic
+    // produces a percentage that describes nothing. Nothing errors, which is
+    // what makes it dangerous: addons read these rows through
+    // ops.health.containers and would conclude the host is idle. Memory and
+    // I/O are instantaneous readings and stay trustworthy.
+    const cpuFromStats = engine.kind !== "podman";
 
     // Resolve installation ownership first, then pass only running IDs so addons cannot
     // obtain telemetry for unrelated host containers.
     const statsOutput = await run("docker", ["stats", "--no-stream", "--format", "{{json .}}", ...containerIds]);
-    return { containers: mergeContainerHealth(statsOutput, statusOutput) };
+    return { containers: mergeContainerHealth(statsOutput, statusOutput, { cpuFromStats }) };
   } catch {
     return { containers: [], error: "Docker container statistics are unavailable." };
   }
 }
 
-export function mergeContainerHealth(statsOutput, statusOutput = "") {
+export function mergeContainerHealth(statsOutput, statusOutput = "", { cpuFromStats = true } = {}) {
   const stats = new Map(parseJsonLines(statsOutput).map(row => [containerName(row), row]));
   return parseJsonLines(statusOutput)
     .map((status) => {
@@ -47,7 +56,7 @@ export function mergeContainerHealth(statsOutput, statusOutput = "") {
       const [memory = "N/A", memoryLimit = "N/A"] = row.MemUsage ? String(row.MemUsage).split("/").map(value => value.trim()) : [];
       return {
         name,
-        cpu: String(row.CPUPerc || "N/A"),
+        cpu: cpuFromStats ? String(row.CPUPerc || "N/A") : "N/A",
         memory,
         memoryLimit,
         networkIO: String(row.NetIO || "N/A"),

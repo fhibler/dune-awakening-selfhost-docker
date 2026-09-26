@@ -56,6 +56,10 @@ function makeFixture() {
   mkdirSync(scripts, { recursive: true });
   mkdirSync(bin, { recursive: true });
   mkdirSync(join(fixture, "runtime/backups/db"), { recursive: true });
+  // db.sh sources runtime/scripts/lib/engine.sh, which describes the container
+  // engine the host is running; without it the script aborts at line 10.
+  mkdirSync(join(scripts, "lib"), { recursive: true });
+  cpSync(resolve(repoRoot, "runtime/scripts/lib/engine.sh"), join(scripts, "lib/engine.sh"));
   cpSync(resolve(repoRoot, "runtime/scripts/db.sh"), join(scripts, "db.sh"));
   cpSync(resolve(repoRoot, "runtime/scripts/env-file.sh"), join(scripts, "env-file.sh"));
   cpSync(resolve(repoRoot, "runtime/scripts/host-file-ownership.sh"), join(scripts, "host-file-ownership.sh"));

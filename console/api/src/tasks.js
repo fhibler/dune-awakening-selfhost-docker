@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { statSync } from "node:fs";
 import { runDune, buildDuneArgs, validateServiceName } from "./runner.js";
+import { containerEngine } from "./engine.js";
 import { liveItemGrantWarning } from "./grantResults.js";
 import { createUpdateCheckCache } from "./services/updateCheckCache.js";
 import { initializeSelfUpdateStatus } from "./services/selfUpdateStatus.js";
@@ -370,6 +371,15 @@ function itemGrantTaskWarning(operation, result) {
   return liveItemGrantWarning(result);
 }
 
+// DUNE_ENGINE_READY is deliberately not forwarded: it would tell a seam
+// sourced inside the helper that detection had already run, leaving the rest of
+// the contract unset for whatever reads it there.
+function hostEngineEnvironment(env) {
+  return Object.entries(env)
+    .filter(([name]) => name.startsWith("DUNE_ENGINE_") && name !== "DUNE_ENGINE_READY")
+    .flatMap(([name, value]) => ["-e", `${name}=${value}`]);
+}
+
 export function buildSelfUpdateHelperDockerArgs({
   helperName,
   hostRepoRoot,
@@ -379,7 +389,16 @@ export function buildSelfUpdateHelperDockerArgs({
   hostGid = "0",
   dockerSocketGid = "0",
   extraEnv = [],
-  command
+  command,
+  engine = containerEngine(),
+  // A host path, like hostRepoRoot: the helper is created on the host, so this
+  // cannot be resolved from inside this container, where the socket is always
+  // mounted at the Docker default. It arrives through the environment
+  // docker-compose.web.yml passes in, and a host that publishes its socket at
+  // the Docker path -- every Docker host, and every Podman host with the
+  // podman.socket drop-in -- never sets it.
+  hostEngineSocket = process.env.DUNE_ENGINE_SOCKET || "/var/run/docker.sock",
+  hostEngineEnv = hostEngineEnvironment(process.env)
 }) {
   return [
       "run",
@@ -390,8 +409,23 @@ export function buildSelfUpdateHelperDockerArgs({
       "--user", `${hostUid}:${hostGid}`,
       "--group-add", dockerSocketGid,
       "--network", "host",
-      "-v", `${hostRepoRoot}:/repo`,
-      "-v", "/var/run/docker.sock:/var/run/docker.sock",
+      // The helper shares /repo with the console, the orchestrator and the
+      // spawners, so the relabel the engine asks for is the shared one. The
+      // socket beside it is deliberately left alone: it belongs to the host,
+      // not to this stack, and relabelling it would rewrite the context every
+      // other client reaches it through.
+      "-v", engine.mountSuffix ? `${hostRepoRoot}:/repo:${engine.mountSuffix}` : `${hostRepoRoot}:/repo`,
+      "-v", `${hostEngineSocket}:/var/run/docker.sock`,
+      // The helper builds images with Compose, and a detached container
+      // inherits nothing from whatever resolved the seam, so the decision has
+      // to travel in the argv.
+      ...(engine.buildKit === null ? [] : ["-e", `DOCKER_BUILDKIT=${engine.buildKit}`]),
+      // The helper recreates the console from docker-compose.web.yml, which
+      // interpolates the engine's restart policy and socket. Those describe the
+      // host, so they are forwarded from the environment the host-side seam put
+      // them in rather than probed again from inside a container, which would
+      // answer about the container.
+      ...hostEngineEnv,
       "-e", `DUNE_HOST_REPO_ROOT=${hostRepoRoot}`,
       "-e", `COMPOSE_PROJECT_NAME=${composeProjectName}`,
       "-e", `DUNE_COMPOSE_PROJECT_NAME=${composeProjectName}`,

@@ -21,6 +21,17 @@ import { fileURLToPath } from "node:url";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 
+// self-update.sh sources runtime/scripts/lib/engine.sh, which describes the
+// container engine the host is running. A fixture that omits it aborts the
+// script before it does anything these tests are about.
+function copySelfUpdateScripts(root) {
+  for (const name of ["self-update.sh", "compose-project.sh", "lib/engine.sh"]) {
+    const dest = join(root, "runtime", "scripts", name);
+    mkdirSync(dirname(dest), { recursive: true });
+    copyFileSync(join(repoRoot, "runtime", "scripts", name), dest);
+  }
+}
+
 test("local-state backup snapshots active audit files and keeps archive failures fatal", () => {
   const root = mkdtempSync(join(tmpdir(), "arrakis-state-snapshot-"));
   try {
@@ -98,8 +109,7 @@ test("self-update preflight explains how to repair unreadable local state", () =
 test("self-update check prefers the official upstream release repo in fork checkouts", async () => {
   const dir = mkdtempSync(join(tmpdir(), "arrakis-self-update-"));
   mkdirSync(join(dir, "runtime", "scripts"), { recursive: true });
-  copyFileSync(join(repoRoot, "runtime", "scripts", "self-update.sh"), join(dir, "runtime", "scripts", "self-update.sh"));
-  copyFileSync(join(repoRoot, "runtime", "scripts", "compose-project.sh"), join(dir, "runtime", "scripts", "compose-project.sh"));
+  copySelfUpdateScripts(dir);
   chmodSync(join(dir, "runtime", "scripts", "self-update.sh"), 0o700);
   writeFileSync(join(dir, "VERSION"), "v1.3.37\n");
 
@@ -142,8 +152,7 @@ test("self-update check prefers the official upstream release repo in fork check
 test("self-update check falls back to the public release redirect when the GitHub API is rate-limited", async () => {
   const dir = mkdtempSync(join(tmpdir(), "arrakis-self-update-rate-limit-"));
   mkdirSync(join(dir, "runtime", "scripts"), { recursive: true });
-  copyFileSync(join(repoRoot, "runtime", "scripts", "self-update.sh"), join(dir, "runtime", "scripts", "self-update.sh"));
-  copyFileSync(join(repoRoot, "runtime", "scripts", "compose-project.sh"), join(dir, "runtime", "scripts", "compose-project.sh"));
+  copySelfUpdateScripts(dir);
   chmodSync(join(dir, "runtime", "scripts", "self-update.sh"), 0o700);
   writeFileSync(join(dir, "VERSION"), "v1.3.97\n");
 
@@ -372,8 +381,7 @@ test("archive self-update times out a stalled download before changing installed
   const runId = "123e4567-e89b-42d3-a456-426614174004";
   mkdirSync(join(root, "runtime", "scripts"), { recursive: true });
   mkdirSync(fakeBin);
-  copyFileSync(join(repoRoot, "runtime", "scripts", "self-update.sh"), join(root, "runtime", "scripts", "self-update.sh"));
-  copyFileSync(join(repoRoot, "runtime", "scripts", "compose-project.sh"), join(root, "runtime", "scripts", "compose-project.sh"));
+  copySelfUpdateScripts(root);
   chmodSync(join(root, "runtime", "scripts", "self-update.sh"), 0o700);
   writeFileSync(join(root, "VERSION"), "v1.4.12\n");
   writeFileSync(join(fakeBin, "docker"), "#!/usr/bin/env bash\nexit 0\n", { mode: 0o700 });
@@ -434,8 +442,7 @@ test("self-update refuses a concurrent install and records a durable busy result
   const runId = "123e4567-e89b-42d3-a456-426614174001";
   mkdirSync(join(root, "runtime", "scripts"), { recursive: true });
   mkdirSync(join(root, "runtime", "generated"), { recursive: true });
-  copyFileSync(join(repoRoot, "runtime", "scripts", "self-update.sh"), join(root, "runtime", "scripts", "self-update.sh"));
-  copyFileSync(join(repoRoot, "runtime", "scripts", "compose-project.sh"), join(root, "runtime", "scripts", "compose-project.sh"));
+  copySelfUpdateScripts(root);
   writeFileSync(join(root, "VERSION"), "v0.0.1\n");
 
   const holder = spawn("flock", [join(root, "runtime", "generated", "self-update.lock"), "sleep", "10"], { stdio: "ignore" });
@@ -464,8 +471,7 @@ test("web console rebuild stops at the configured build timeout", async () => {
   mkdirSync(join(root, "runtime", "scripts"), { recursive: true });
   mkdirSync(join(root, "runtime", "generated"), { recursive: true });
   mkdirSync(fakeBin);
-  copyFileSync(join(repoRoot, "runtime", "scripts", "self-update.sh"), join(root, "runtime", "scripts", "self-update.sh"));
-  copyFileSync(join(repoRoot, "runtime", "scripts", "compose-project.sh"), join(root, "runtime", "scripts", "compose-project.sh"));
+  copySelfUpdateScripts(root);
   writeFileSync(join(root, "VERSION"), "v0.0.1\n");
   writeFileSync(join(root, "docker-compose.web.yml"), "services: {}\n");
   writeFileSync(join(fakeBin, "docker"), "#!/usr/bin/env bash\nexit 0\n", { mode: 0o700 });

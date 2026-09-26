@@ -167,6 +167,66 @@ test("web self-update helper mounts the host repo path", () => {
   assert(!args.includes("/repo:/repo"));
 });
 
+function selfUpdateHelperArgs(overrides = {}) {
+  return buildSelfUpdateHelperDockerArgs({
+    helperName: "dune-web-self-update-test",
+    hostRepoRoot: "/home/ubuntu/dune-awakening-selfhost-docker",
+    composeProjectName: "dune-awakening-selfhost-docker",
+    helperImage: "redblink-dune-docker-console:dev",
+    hostUid: "1000",
+    hostGid: "1000",
+    dockerSocketGid: "988",
+    extraEnv: [],
+    command: "runtime/scripts/dune self-update install latest",
+    ...overrides
+  });
+}
+
+test("web self-update helper emits an unchanged Docker argv", () => {
+  const args = selfUpdateHelperArgs({ engine: { kind: "docker", mountSuffix: "", buildKit: null } });
+  assert(args.includes("/home/ubuntu/dune-awakening-selfhost-docker:/repo"));
+  assert(args.includes("/var/run/docker.sock:/var/run/docker.sock"));
+  assert.deepEqual(args.filter((arg) => arg.startsWith("DOCKER_BUILDKIT")), []);
+  assert.deepEqual(args.filter((arg) => arg.startsWith("DUNE_ENGINE_")), []);
+});
+
+test("web self-update helper relabels the repo mount and disables BuildKit on Podman", () => {
+  const args = selfUpdateHelperArgs({ engine: { kind: "podman", mountSuffix: "z", buildKit: "0" } });
+  assert(args.includes("/home/ubuntu/dune-awakening-selfhost-docker:/repo:z"));
+  assert(!args.includes("/home/ubuntu/dune-awakening-selfhost-docker:/repo"));
+  assert.deepEqual(args.slice(args.indexOf("DOCKER_BUILDKIT=0") - 1, args.indexOf("DOCKER_BUILDKIT=0") + 1), ["-e", "DOCKER_BUILDKIT=0"]);
+  // The socket mount keeps the host's own SELinux context: every other client
+  // reaches it through that context too.
+  assert(args.includes("/var/run/docker.sock:/var/run/docker.sock"));
+});
+
+test("web self-update helper hands the host's engine facts to the Compose run that recreates the console", () => {
+  const previous = { ...process.env };
+  process.env.DUNE_ENGINE_RESTART_POLICY = "always";
+  process.env.DUNE_ENGINE_READY = "1";
+  try {
+    const args = selfUpdateHelperArgs({ engine: { kind: "podman", mountSuffix: "z", buildKit: "0" } });
+    assert(args.includes("DUNE_ENGINE_RESTART_POLICY=always"));
+    assert.deepEqual(args.filter((arg) => arg.startsWith("DUNE_ENGINE_READY")), []);
+  } finally {
+    delete process.env.DUNE_ENGINE_RESTART_POLICY;
+    delete process.env.DUNE_ENGINE_READY;
+    Object.assign(process.env, previous);
+  }
+});
+
+test("web self-update helper binds the host's engine socket when it is not at the Docker path", () => {
+  const previous = process.env.DUNE_ENGINE_SOCKET;
+  process.env.DUNE_ENGINE_SOCKET = "/run/podman/podman.sock";
+  try {
+    const args = selfUpdateHelperArgs({ engine: { kind: "podman", mountSuffix: "z", buildKit: "0" } });
+    assert(args.includes("/run/podman/podman.sock:/var/run/docker.sock"));
+  } finally {
+    if (previous === undefined) delete process.env.DUNE_ENGINE_SOCKET;
+    else process.env.DUNE_ENGINE_SOCKET = previous;
+  }
+});
+
 test("self-update helper age recognizes both current and legacy helper names", () => {
   const now = 2_000_000_000_000;
   assert.equal(selfUpdateHelperAgeMs("dune-web-self-update-1999999880000", now), 120_000);

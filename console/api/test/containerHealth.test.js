@@ -103,3 +103,31 @@ test("running containers remain visible if Docker stats omits them", () => {
   assert.equal(result[0].status, "Up 1 minute");
   assert.equal(result[0].cpu, "N/A");
 });
+
+test("container health withholds Podman's single-sample CPU percentage instead of reporting it", async () => {
+  const calls = [];
+  const run = async (command, args) => {
+    calls.push(args);
+    if (args[0] === "ps") return '{"ID":"abc123","Names":"dune-postgres","State":"running","Status":"Up 2 hours (healthy)"}';
+    if (args[0] === "inspect") return JSON.stringify({ id: "abc123", labels: { "com.docker.compose.project": "dune-test" } });
+    // What Podman's compat endpoint yields for a one-shot request: a single
+    // sample against a zeroed baseline, so the CLI's delta is meaningless.
+    return '{"Name":"dune-postgres","CPUPerc":"0.00%","MemUsage":"100MiB / 1GiB","NetIO":"1kB / 2kB","BlockIO":"3MB / 4MB"}';
+  };
+
+  const podman = await collectContainerHealth({ projectName: "dune-test", run, engine: { kind: "podman" } });
+  assert.deepEqual(podman.containers, [{
+    name: "dune-postgres",
+    cpu: "N/A",
+    memory: "100MiB",
+    memoryLimit: "1GiB",
+    networkIO: "1kB / 2kB",
+    blockIO: "3MB / 4MB",
+    status: "Up 2 hours (healthy)"
+  }]);
+  // Same request either way: only the reading of the answer differs.
+  assert.deepEqual(calls[2], ["stats", "--no-stream", "--format", "{{json .}}", "abc123"]);
+
+  const docker = await collectContainerHealth({ projectName: "dune-test", run, engine: { kind: "docker" } });
+  assert.equal(docker.containers[0].cpu, "0.00%");
+});

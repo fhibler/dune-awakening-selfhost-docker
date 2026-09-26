@@ -15,19 +15,41 @@ const MEMORY_BALANCER_MIN_HEADROOM_BYTES = 1024 ** 3;
 const LIVE_MEMORY_CACHE_MS = 10000;
 const SWAP_SAMPLE_CONCURRENCY = 4;
 const SWAP_SAMPLE_TIMEOUT_MS = 3000;
-const CONTAINER_SWAP_STAT_SCRIPT = `if [ -r /sys/fs/cgroup/memory.swap.current ]; then
-  current=$(cat /sys/fs/cgroup/memory.swap.current 2>/dev/null) || exit 1
-  maximum=$(cat /sys/fs/cgroup/memory.swap.max 2>/dev/null) || exit 1
+// A container reads its own figures at the root of /sys/fs/cgroup only under a
+// private cgroup namespace. That is Docker's default, but Podman takes it from
+// containers.conf and rootful Podman has shipped `host` in several
+// configurations -- where these same files hold the host root cgroup's
+// numbers. The files exist and return a plausible figure either way, so the
+// balancer would size transfers from host-wide swap and never notice.
+// /proc/self/cgroup names the container's real path: "/" means the namespace
+// is private and the unprefixed paths are already the right ones.
+export const CONTAINER_SWAP_STAT_SCRIPT = `own=""
+while IFS=: read -r _hierarchy controllers path; do
+  if [ -z "$controllers" ]; then own="$path"; break; fi
+done < /proc/self/cgroup 2>/dev/null
+base=/sys/fs/cgroup
+if [ -n "$own" ] && [ "$own" != "/" ] && [ -r "$base$own/memory.swap.current" ]; then base="$base$own"; fi
+if [ -r "$base/memory.swap.current" ]; then
+  current=$(cat "$base/memory.swap.current" 2>/dev/null) || exit 1
+  maximum=$(cat "$base/memory.swap.max" 2>/dev/null) || exit 1
   printf 'v2|%s|%s\\n' "$current" "$maximum"
-elif [ -r /sys/fs/cgroup/memory/memory.memsw.usage_in_bytes ] && [ -r /sys/fs/cgroup/memory/memory.usage_in_bytes ]; then
-  memory_current=$(cat /sys/fs/cgroup/memory/memory.usage_in_bytes 2>/dev/null) || exit 1
-  combined_current=$(cat /sys/fs/cgroup/memory/memory.memsw.usage_in_bytes 2>/dev/null) || exit 1
-  memory_max=$(cat /sys/fs/cgroup/memory/memory.limit_in_bytes 2>/dev/null) || exit 1
-  combined_max=$(cat /sys/fs/cgroup/memory/memory.memsw.limit_in_bytes 2>/dev/null) || exit 1
+  exit 0
+fi
+own=""
+while IFS=: read -r _hierarchy controllers path; do
+  case ",$controllers," in *,memory,*) own="$path"; break ;; esac
+done < /proc/self/cgroup 2>/dev/null
+base=/sys/fs/cgroup/memory
+if [ -n "$own" ] && [ "$own" != "/" ] && [ -r "$base$own/memory.usage_in_bytes" ]; then base="$base$own"; fi
+if [ -r "$base/memory.memsw.usage_in_bytes" ] && [ -r "$base/memory.usage_in_bytes" ]; then
+  memory_current=$(cat "$base/memory.usage_in_bytes" 2>/dev/null) || exit 1
+  combined_current=$(cat "$base/memory.memsw.usage_in_bytes" 2>/dev/null) || exit 1
+  memory_max=$(cat "$base/memory.limit_in_bytes" 2>/dev/null) || exit 1
+  combined_max=$(cat "$base/memory.memsw.limit_in_bytes" 2>/dev/null) || exit 1
   printf 'v1|%s|%s|%s|%s\\n' "$memory_current" "$combined_current" "$memory_max" "$combined_max"
-else
-  exit 2
-fi`;
+  exit 0
+fi
+exit 2`;
 
 export function createDockerStatsSampler(config, options = {}) {
   const collect = options.collect || (async () => {

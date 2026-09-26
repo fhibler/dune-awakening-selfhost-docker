@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { applyContainerSwapStats, collectContainerSwapStats, createDockerStatsSampler, createMemoryBalancer, dockerMemoryUpdateArgs, parseContainerSwapStats, parseDockerStatsRow, readMemorySwapAllowanceBytes } from "../src/services/memoryBalancer.js";
+import { execFileSync } from "node:child_process";
+import { applyContainerSwapStats, collectContainerSwapStats, CONTAINER_SWAP_STAT_SCRIPT, createDockerStatsSampler, createMemoryBalancer, dockerMemoryUpdateArgs, parseContainerSwapStats, parseDockerStatsRow, readMemorySwapAllowanceBytes } from "../src/services/memoryBalancer.js";
 
 test("memory balancer updates Docker swap limit with memory limit", () => {
   assert.deepEqual(dockerMemoryUpdateArgs("dune-server-overmap", 2 * 1024 ** 3), [
@@ -171,4 +172,25 @@ test("memory balancer persists enabled state across restarts", async () => {
   assert.equal(JSON.parse(readFileSync(join(generatedDir, "memory-balancer.json"), "utf8")).enabled, false);
 
   rmSync(root, { recursive: true, force: true });
+});
+
+test("container swap sampler script is valid POSIX shell", () => {
+  execFileSync("/bin/sh", ["-n", "-c", CONTAINER_SWAP_STAT_SCRIPT], { stdio: ["ignore", "ignore", "pipe"] });
+});
+
+// The sampler resolves /proc/self/cgroup before reading, because Podman may
+// hand a container the host cgroup namespace, where the unprefixed files hold
+// the host's swap totals. Under the private namespace Docker always gives --
+// which is what this process has -- resolution must be a no-op.
+test("container swap sampler reads the cgroup root unchanged under a private cgroup namespace", (t) => {
+  let expected;
+  try {
+    if (readFileSync("/proc/self/cgroup", "utf8").trim() !== "0::/") return t.skip("not a private cgroup v2 namespace");
+    expected = ["current", "max"].map((name) => readFileSync(`/sys/fs/cgroup/memory.swap.${name}`, "utf8").trim());
+  } catch {
+    return t.skip("cgroup v2 swap accounting is unavailable on this host");
+  }
+  const output = execFileSync("/bin/sh", ["-c", CONTAINER_SWAP_STAT_SCRIPT], { encoding: "utf8" });
+  assert.equal(output.trim(), `v2|${expected[0]}|${expected[1]}`);
+  assert.deepEqual(parseContainerSwapStats(output).supported, true);
 });

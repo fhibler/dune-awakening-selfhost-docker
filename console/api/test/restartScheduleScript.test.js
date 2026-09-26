@@ -21,7 +21,7 @@ test("scheduled restart reapplies saved Spice Field overrides after startup", ()
   );
   chmodSync(join(scriptsDir, "restart-schedule.sh"), 0o700);
 
-  writeExecutable(join(scriptsDir, "runtime-env.sh"), [
+  writeRuntimeEnvStub(scriptsDir, [
     "resolve_server_ip_mode() { echo local; }",
     "resolve_server_ip() { :; }",
     "is_ipv4() { return 1; }",
@@ -85,7 +85,7 @@ test("scheduled restart skips queued back-to-back activations", () => {
   );
   chmodSync(join(scriptsDir, "restart-schedule.sh"), 0o700);
 
-  writeExecutable(join(scriptsDir, "runtime-env.sh"), "resolve_server_ip_mode() { echo local; }");
+  writeRuntimeEnvStub(scriptsDir, "resolve_server_ip_mode() { echo local; }");
   writeExecutable(join(scriptsDir, "host-file-ownership.sh"), "dune_resolve_host_owner() { stat -c '%u:%g' .; }");
   writeExecutable(join(scriptsDir, "sietches.sh"), "exit 0");
   writeFileSync(join(scriptsDir, "usersettings.py"), "raise SystemExit(0)\n");
@@ -127,7 +127,7 @@ test("scheduled restart leaves the running Battlegroup untouched when saved sett
 
   copyFileSync(join(repoRoot, "runtime/scripts/restart-schedule.sh"), join(scriptsDir, "restart-schedule.sh"));
   chmodSync(join(scriptsDir, "restart-schedule.sh"), 0o700);
-  writeExecutable(join(scriptsDir, "runtime-env.sh"), "resolve_server_ip_mode() { echo local; }");
+  writeRuntimeEnvStub(scriptsDir, "resolve_server_ip_mode() { echo local; }");
   writeExecutable(join(scriptsDir, "host-file-ownership.sh"), "dune_resolve_host_owner() { stat -c '%u:%g' .; }");
   writeExecutable(join(scriptsDir, "sietches.sh"), [
     "#!/usr/bin/env bash",
@@ -153,4 +153,14 @@ test("scheduled restart leaves the running Battlegroup untouched when saved sett
 function writeExecutable(path, content) {
   writeFileSync(path, `${content}\n`);
   chmodSync(path, 0o700);
+}
+
+// restart-schedule.sh renders systemd units whose ordering and environment come
+// from the container-engine seam, which it reaches through runtime-env.sh. The
+// stub that replaces runtime-env.sh here has to keep that link to the real
+// lib/engine.sh, or the script aborts on an undefined function.
+function writeRuntimeEnvStub(scriptsDir, content) {
+  mkdirSync(join(scriptsDir, "lib"), { recursive: true });
+  copyFileSync(join(repoRoot, "runtime/scripts/lib/engine.sh"), join(scriptsDir, "lib/engine.sh"));
+  writeExecutable(join(scriptsDir, "runtime-env.sh"), `source runtime/scripts/lib/engine.sh\n${content}`);
 }

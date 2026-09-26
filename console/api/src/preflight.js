@@ -4,6 +4,7 @@ import { execFileSync } from "node:child_process";
 import { createServer } from "node:net";
 import { resolve } from "node:path";
 import { resolvePorts } from "./config.js";
+import { containerEngine } from "./engine.js";
 
 export async function preflight(config) {
   const ports = configuredPorts(config.ports);
@@ -13,10 +14,7 @@ export async function preflight(config) {
   checks.push(cpuFlags());
   checks.push(check("RAM", totalmem() >= 16 * 1024 ** 3 ? "pass" : "warn", `${gb(totalmem())} GiB total, ${gb(freemem())} GiB free`));
   checks.push(diskCheck(config.repoRoot));
-  checks.push(dockerCliCheck());
-  checks.push(dockerComposeCheck());
-  checks.push(dockerSocketCheck());
-  checks.push(dockerDaemonCheck());
+  checks.push(...engineChecks());
   checks.push(fileCheck("Runtime directory", config.repoRoot));
   checks.push(fileCheck("docker-compose.yml", resolve(config.repoRoot, "docker-compose.yml")));
   checks.push(fileCheck("dune command", config.duneScript));
@@ -72,40 +70,138 @@ function commandCheck(name, cmd, args) {
   }
 }
 
-function dockerCliCheck() {
-  try {
-    const out = execFileSync("docker", ["--version"], { encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "pipe"] });
-    return check("Docker CLI", "pass", out.split(/\r?\n/)[0]);
-  } catch (error) {
-    return check(
-      "Docker CLI",
-      "fail",
-      "Docker is missing.",
-      [
+// Option C puts the real Docker CLI and the real Compose plugin in front of
+// whichever engine the host runs, so these checks probe the same things either
+// way, and so do the CLI's own error strings. What changes is what an operator
+// has to do about a failure: there is no Docker daemon to start on a Podman
+// host, and rootful Podman's socket is root:root with no group to join until a
+// podman.socket drop-in gives it one -- which is why the stock advice to read
+// the group id back with stat is worse than useless there, reporting 0.
+const ENGINE_REMEDIATION = {
+  docker: {
+    summary: "",
+    cliMissing: {
+      message: "Docker is missing.",
+      detail: [
         "Run the included installer on the server so it can install Docker for you.",
         "If you use Docker Desktop, install and start Docker Desktop first."
-      ].join("\n")
-    );
+      ]
+    },
+    composeMissing: {
+      message: "Docker Compose is missing.",
+      detail: ["Run the included installer again so it can add Compose where supported. If you use Docker Desktop, make sure Docker Desktop is fully started."]
+    },
+    socketMissing: {
+      message: "Docker socket is not mounted.",
+      detail: ["The Web UI container needs /var/run/docker.sock mounted so it can manage local Docker services."]
+    },
+    socketDenied: {
+      message: "Docker socket permission denied.",
+      intro: "The Web UI can see Docker, but this container cannot access the Docker socket.",
+      detail: [
+        "Set DOCKER_SOCKET_GID to the Docker socket group id, then restart the Web UI:",
+        "  DOCKER_SOCKET_GID=$(stat -c '%g' /var/run/docker.sock) dune console restart"
+      ]
+    },
+    notRunning: {
+      message: "Docker daemon is not running or cannot be reached.",
+      detail: [
+        "Start Docker on the server, then restart the Web UI.",
+        "On Linux, the included installer normally starts Docker automatically.",
+        "If you use Docker Desktop, open Docker Desktop and wait until it says the engine is running."
+      ]
+    },
+    unreachable: {
+      message: "Docker is installed but is not running or cannot be reached.",
+      detail: [
+        "Run the included installer again so it can start Docker and repair access where supported.",
+        "If you use Docker Desktop, open Docker Desktop and wait until it says the engine is running."
+      ]
+    }
+  },
+  podman: {
+    summary: "The Docker CLI and the Compose plugin are talking to Podman's Docker-compatible API socket, so the checks below report on Podman.",
+    cliMissing: {
+      message: "The Docker CLI is missing.",
+      detail: ["Run the included installer on the server so it can install the Docker CLI. Podman needs it: the CLI is what this stack drives, over Podman's Docker-compatible socket."]
+    },
+    composeMissing: {
+      message: "Docker Compose is missing.",
+      detail: ["Run the included installer again so it can add the Compose v2 plugin. Podman ships no Compose of its own, and podman-compose is not a substitute."]
+    },
+    socketMissing: {
+      message: "The container engine socket is not mounted.",
+      detail: [
+        "The Web UI container needs Podman's API socket mounted at /var/run/docker.sock so it can manage local services.",
+        "Enable the socket on the server first, then restart the Web UI:",
+        "  sudo systemctl enable --now podman.socket"
+      ]
+    },
+    socketDenied: {
+      message: "Podman socket permission denied.",
+      intro: "The Web UI can see the engine, but this container cannot access the socket mounted at /var/run/docker.sock.",
+      detail: [
+        "Rootful Podman's socket is owned by root:root, so a group id alone cannot grant access until the socket has a group. Give it one with a podman.socket drop-in (SocketGroup= and SocketMode=0660, plus an ExecStartPost= that opens /run/podman itself), then set DOCKER_SOCKET_GID to that group and restart the Web UI:",
+        "  DOCKER_SOCKET_GID=$(stat -c '%g' /var/run/docker.sock) dune console restart",
+        "Membership of that group is equivalent to root on this host; grant it as narrowly as the docker group."
+      ]
+    },
+    notRunning: {
+      message: "The Podman API socket is not running or cannot be reached.",
+      detail: [
+        "Start Podman's API socket on the server, then restart the Web UI:",
+        "  sudo systemctl enable --now podman.socket",
+        "Podman has no long-running daemon: if the socket is not enabled, nothing answers at /var/run/docker.sock."
+      ]
+    },
+    unreachable: {
+      message: "Podman is installed but its API socket is not running or cannot be reached.",
+      detail: [
+        "Run the included installer again so it can enable podman.socket and repair access where supported.",
+        "  sudo systemctl status podman.socket"
+      ]
+    }
   }
+};
+
+const DEFAULT_SOCKET_PATH = "/var/run/docker.sock";
+
+// Exported as a group so the engine-dependent checks can be exercised without a
+// container engine, and without preflight()'s port probes.
+export function engineChecks({ engine = containerEngine(), run = runEngineCommand, socketPath = DEFAULT_SOCKET_PATH } = {}) {
+  const advice = ENGINE_REMEDIATION[engine.kind] || ENGINE_REMEDIATION.docker;
+  return [
+    check("Container engine", "info", engine.kind, advice.summary),
+    dockerCliCheck(run, advice),
+    dockerComposeCheck(run, advice),
+    dockerSocketCheck(socketPath, advice),
+    dockerDaemonCheck(run, advice, socketPath)
+  ];
 }
 
-function dockerComposeCheck() {
+function runEngineCommand(args) {
+  return execFileSync("docker", args, { encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "pipe"] });
+}
+
+function dockerCliCheck(run, advice) {
   try {
-    const out = execFileSync("docker", ["compose", "version"], { encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "pipe"] });
-    return check("Docker Compose", "pass", out.split(/\r?\n/)[0]);
+    return check("Docker CLI", "pass", run(["--version"]).split(/\r?\n/)[0]);
   } catch (error) {
-    return check(
-      "Docker Compose",
-      "fail",
-      "Docker Compose is missing.",
-      "Run the included installer again so it can add Compose where supported. If you use Docker Desktop, make sure Docker Desktop is fully started."
-    );
+    return check("Docker CLI", "fail", advice.cliMissing.message, advice.cliMissing.detail.join("\n"));
   }
 }
 
-function dockerDaemonCheck() {
+function dockerComposeCheck(run, advice) {
   try {
-    const out = execFileSync("docker", ["info"], { encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "pipe"] });
+    return check("Docker Compose", "pass", run(["compose", "version"]).split(/\r?\n/)[0]);
+  } catch (error) {
+    return check("Docker Compose", "fail", advice.composeMissing.message, advice.composeMissing.detail.join("\n"));
+  }
+}
+
+function dockerDaemonCheck(run, advice, socketPath) {
+  try {
+    const out = run(["info"]);
     const line = out.split(/\r?\n/).map((part) => part.trim()).find(Boolean) || "Docker daemon is reachable";
     return check("Docker daemon", "pass", line);
   } catch (error) {
@@ -114,61 +210,36 @@ function dockerDaemonCheck() {
       return check(
         "Docker daemon",
         "fail",
-        "Docker socket permission denied.",
+        advice.socketDenied.message,
         [
-          "The Web UI can see Docker, but this container cannot access the Docker socket.",
-          dockerSocketDetail(),
-          "Set DOCKER_SOCKET_GID to the Docker socket group id, then restart the Web UI:",
-          "  DOCKER_SOCKET_GID=$(stat -c '%g' /var/run/docker.sock) dune console restart"
+          advice.socketDenied.intro,
+          dockerSocketDetail(null, socketPath),
+          ...advice.socketDenied.detail
         ].filter(Boolean).join("\n")
       );
     }
     if (/cannot connect to the docker daemon|is the docker daemon running/i.test(output)) {
-      return check(
-        "Docker daemon",
-        "fail",
-        "Docker daemon is not running or cannot be reached.",
-        [
-          "Start Docker on the server, then restart the Web UI.",
-          "On Linux, the included installer normally starts Docker automatically.",
-          "If you use Docker Desktop, open Docker Desktop and wait until it says the engine is running."
-        ].join("\n")
-      );
+      return check("Docker daemon", "fail", advice.notRunning.message, advice.notRunning.detail.join("\n"));
     }
-    return check(
-      "Docker daemon",
-      "fail",
-      "Docker is installed but is not running or cannot be reached.",
-      [
-        "Run the included installer again so it can start Docker and repair access where supported.",
-        "If you use Docker Desktop, open Docker Desktop and wait until it says the engine is running.",
-        output
-      ].join("\n")
-    );
+    return check("Docker daemon", "fail", advice.unreachable.message, [...advice.unreachable.detail, output].join("\n"));
   }
 }
 
-function dockerSocketCheck() {
-  const socket = "/var/run/docker.sock";
-  if (!existsSync(socket)) {
-    return check(
-      "Docker socket",
-      "fail",
-      "Docker socket is not mounted.",
-      "The Web UI container needs /var/run/docker.sock mounted so it can manage local Docker services."
-    );
+function dockerSocketCheck(socketPath, advice) {
+  if (!existsSync(socketPath)) {
+    return check("Docker socket", "fail", advice.socketMissing.message, advice.socketMissing.detail.join("\n"));
   }
   try {
-    const st = statSync(socket);
-    return check("Docker socket", st.isSocket() ? "pass" : "warn", dockerSocketDetail(st));
+    const st = statSync(socketPath);
+    return check("Docker socket", st.isSocket() ? "pass" : "warn", dockerSocketDetail(st, socketPath));
   } catch (error) {
     return check("Docker socket", "fail", "Could not inspect Docker socket.", String(error?.message || "Unexpected error."));
   }
 }
 
-function dockerSocketDetail(existingStat = null) {
+function dockerSocketDetail(existingStat = null, socketPath = DEFAULT_SOCKET_PATH) {
   try {
-    const st = existingStat || statSync("/var/run/docker.sock");
+    const st = existingStat || statSync(socketPath);
     return `Socket group id: ${st.gid}, mode: ${modeString(st.mode)}`;
   } catch {
     return "";

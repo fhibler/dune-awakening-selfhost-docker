@@ -191,8 +191,15 @@ function portValue(value, fallback) {
   return Number.isInteger(parsed) && parsed > 0 && parsed <= 65535 ? parsed : fallback;
 }
 
+// Where the repository is rooted for this process. Exported because callers
+// that run before (or without) loadConfig() -- engine.js resolving the shell
+// seam is the one that matters -- must land on exactly the same directory.
+export function resolveRepoRoot(env = process.env) {
+  return resolve(env.DUNE_DOCKER_DIR || env.RUNTIME_DIR || process.cwd());
+}
+
 export function loadConfig() {
-  const repoRoot = resolve(process.env.DUNE_DOCKER_DIR || process.env.RUNTIME_DIR || process.cwd());
+  const repoRoot = resolveRepoRoot();
   const generatedDir = resolve(repoRoot, "runtime/generated");
   const secretsDir = resolve(repoRoot, "runtime/secrets");
   const secureCookieEnv = process.env.ADMIN_SECURE_COOKIES;
