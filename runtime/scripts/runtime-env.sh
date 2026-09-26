@@ -9,6 +9,8 @@ source runtime/scripts/env-file.sh
 source runtime/scripts/host-file-ownership.sh
 # shellcheck source=runtime/scripts/lib/secrets.sh
 source runtime/scripts/lib/secrets.sh
+# shellcheck source=runtime/scripts/lib/engine.sh
+source runtime/scripts/lib/engine.sh
 
 # shellcheck disable=SC1091
 source runtime/scripts/compose-project.sh
@@ -18,7 +20,7 @@ if [ -z "${DUNE_COMPOSE_PROJECT_NAME:-}" ]; then
 fi
 export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-$DUNE_COMPOSE_PROJECT_NAME}"
 
-# Keep Docker's json-file logs bounded. These arguments are shared by every
+# Keep the engine's json-file logs bounded. These arguments are shared by every
 # container created directly by the runtime scripts.
 DUNE_DOCKER_LOG_MAX_SIZE="${DUNE_DOCKER_LOG_MAX_SIZE:-50m}"
 DUNE_DOCKER_LOG_MAX_FILES="${DUNE_DOCKER_LOG_MAX_FILES:-3}"
@@ -34,8 +36,23 @@ fi
 DUNE_DOCKER_LOG_ARGS=(
   --log-driver json-file
   --log-opt "max-size=$DUNE_DOCKER_LOG_MAX_SIZE"
-  --log-opt "max-file=$DUNE_DOCKER_LOG_MAX_FILES"
 )
+# Podman's json-file driver honours max-size but rejects max-file: rotation
+# count is not configurable there. Every call site passes the driver
+# explicitly rather than relying on a daemon default, so dropping the one
+# unsupported option here covers all of them.
+if [ "$DUNE_ENGINE_SUPPORTS_LOG_MAX_FILE" = "1" ]; then
+  DUNE_DOCKER_LOG_ARGS+=(--log-opt "max-file=$DUNE_DOCKER_LOG_MAX_FILES")
+fi
+
+# Splice into a `docker run` for a container that bind-mounts the host root
+# and chroots into it; see dune_engine_label_disable_args in lib/engine.sh.
+# Empty on Docker.
+# shellcheck disable=SC2034 # Consumed by scripts that source this file.
+DUNE_ENGINE_LABEL_DISABLE_ARGS=()
+if [ -n "$(dune_engine_label_disable_args)" ]; then
+  DUNE_ENGINE_LABEL_DISABLE_ARGS=(--security-opt label=disable)
+fi
 
 value_is_known() {
   local value="${1:-}"

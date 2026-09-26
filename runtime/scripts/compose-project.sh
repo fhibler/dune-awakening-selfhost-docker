@@ -40,6 +40,13 @@ dune_compose_container_label() {
     "$dune_compose_container" 2>/dev/null | head -n 1
 }
 
+# Every filter below reads Compose v2's own label dialect. Keep it that way,
+# on both engines. Compose applies these labels client-side, so they are
+# identical whatever the socket is pointed at -- but `podman-compose` is a
+# different implementation that writes `io.podman.compose.*` and would match
+# nothing here, silently. That is the single strongest reason the Podman
+# deployment uses the real Compose v2 plugin against Podman's Docker-compatible
+# socket rather than podman-compose. See docs/podman.md.
 dune_compose_service_projects() {
   dune_compose_service="$1"
   command -v docker >/dev/null 2>&1 || return 1

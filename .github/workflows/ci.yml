@@ -172,6 +172,8 @@ jobs:
         run: |
           runtime/tests/test-compose-project-name-portability.sh
           runtime/tests/test-compose-project-resolution.sh
+      - name: Test container-engine seam (Docker and Podman legs)
+        run: runtime/tests/test-engine-seam.sh
       - name: Test age-based secrets library (AEAD primitive, shell seam, cross-language round-trip)
         run: |
           python3 runtime/scripts/lib/test_secrets_aead.py -v
