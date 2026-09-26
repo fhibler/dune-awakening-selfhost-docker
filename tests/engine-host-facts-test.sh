@@ -64,6 +64,9 @@ socket_gid_outcome() {
     chmod +x bin/stat
     export PATH="$PWD/bin:$PATH"
 
+    # Read by the lifted prepare_docker_socket_gid below; shellcheck cannot
+    # see through the eval that defines it.
+    # shellcheck disable=SC2034
     DUNE_ENGINE_KIND="$kind"
     persist_env_value() { printf 'persisted %s=%s\n' "$1" "$2"; }
     eval "$(awk '
@@ -74,6 +77,7 @@ socket_gid_outcome() {
 
     # The real function guards on [ -S /var/run/docker.sock ]; this environment
     # has no engine socket, so seed the value the probe would have produced.
+    # shellcheck disable=SC2034
     DOCKER_SOCKET_GID="$socket_gid"
     prepare_docker_socket_gid 2>/dev/null
   )"

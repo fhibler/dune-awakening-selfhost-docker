@@ -9,6 +9,7 @@ DUNE_COMPOSE_PROJECT_NAME="$(dune_resolve_compose_project_name "$(pwd -P)")"
 export DUNE_COMPOSE_PROJECT_NAME
 
 # shellcheck source=runtime/scripts/lib/engine.sh
+# shellcheck disable=SC1091
 . runtime/scripts/lib/engine.sh
 
 # Compose cannot call the seam's shell functions, so the two host paths

@@ -44,7 +44,11 @@ eval "$(awk '
 ' "$doctor")"
 
 failures=0
+# The tally the lifted fail_msg/warn_msg bodies increment. shellcheck cannot
+# see through the eval that defines them.
+# shellcheck disable=SC2034
 fail=0
+# shellcheck disable=SC2034
 warn=0
 
 use_engine() {
