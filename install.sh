@@ -423,7 +423,13 @@ install_compose_plugin_static() {
     exit 1
   fi
 
-  need_sudo mkdir -p /usr/local/lib/docker/cli-plugins
+  # `install -d -m 0755`, not `mkdir -p`: sudo on AlmaLinux runs with umask
+  # 0077, so a plain mkdir here leaves the plugin directory 0700 root:root.
+  # The plugin binary inside it is still 0755, so nothing looks wrong -- but
+  # the operator's own CLI cannot traverse the directory to find it, and
+  # `docker compose` stays "not available" however many times the installer
+  # reinstalls it. The mode has to be stated rather than inherited.
+  need_sudo install -d -m 0755 /usr/local/lib/docker/cli-plugins
   need_sudo install -m 0755 "$compose_plugin_tmp" /usr/local/lib/docker/cli-plugins/docker-compose
   rm -f "$compose_plugin_tmp"
   trap - 0
@@ -556,8 +562,14 @@ EOF
   fi
 
   if [ "$podman_socket_dropin_changed" = "1" ]; then
-    need_sudo mkdir -p "$(dirname "$PODMAN_SOCKET_DROPIN")"
+    # Same umask trap as the Compose plugin directory: systemd reads drop-ins
+    # as root either way, so 0700/0600 here would work and stay invisible --
+    # until an operator runs `systemctl cat podman.socket` and is shown a unit
+    # with no drop-in, which is the one command they are told to run when the
+    # socket misbehaves.
+    need_sudo install -d -m 0755 "$(dirname "$PODMAN_SOCKET_DROPIN")"
     printf '%s\n' "$podman_socket_dropin_body" | need_sudo tee "$PODMAN_SOCKET_DROPIN" >/dev/null
+    need_sudo chmod 0644 "$PODMAN_SOCKET_DROPIN"
     need_sudo systemctl daemon-reload
   fi
 

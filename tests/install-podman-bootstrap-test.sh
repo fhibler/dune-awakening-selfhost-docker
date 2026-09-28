@@ -267,6 +267,13 @@ else
         || fail "the drop-in does not hand the socket to the podman group"
       grep -Fqx 'SocketMode=0660' "$dropin" \
         || fail "the drop-in does not restrict the socket to its group"
+      # Written through `tee` under sudo, whose umask is 0077 on AlmaLinux, so
+      # the file lands 0600 root:root unless the mode is stated. systemd reads
+      # it either way, which is what makes this quiet: the socket works, and
+      # `systemctl cat podman.socket` -- the command an operator is told to run
+      # when it does not -- shows a unit with no drop-in at all.
+      grep -Fq 'chmod 0644 /etc/systemd/system/podman.socket.d/10-dune-docker-compat.conf' "$sudo_log" \
+        || fail "the drop-in's mode is left to sudo's umask, so it can be unreadable to everyone but root"
     fi
 
     grep -Fq 'systemctl enable podman-restart.service' "$sudo_log" \
@@ -341,6 +348,23 @@ grep -Fq "docker-${installer_cli_version}.tgz" console/api/Dockerfile \
   || fail "install.sh pins Docker CLI $installer_cli_version but console/api/Dockerfile ships another"
 grep -Fq "v${installer_compose_version}/docker-compose-linux-" console/api/Dockerfile \
   || fail "install.sh pins Compose $installer_compose_version but console/api/Dockerfile ships another"
+
+# --------------------------------------------------------------------------
+# Every directory the installer creates with privilege states its mode. sudo
+# runs with umask 0077 on AlmaLinux, so a bare `mkdir -p` there lands 0700
+# root:root, and the binary installed into it is still 0755 -- so nothing
+# looks wrong. /usr/local/lib/docker/cli-plugins is the one that bites: the
+# operator's own CLI cannot traverse it to find the plugin, and `docker
+# compose` stays "not available" however many times the installer reinstalls
+# it, which is a loop with no error naming a permission.
+#
+# Source-level, like the version pins above, because the scenarios cannot
+# reach it: the curl stub fails by design, and both static installers exit on
+# a failed download before they create anything.
+# --------------------------------------------------------------------------
+bare_privileged_mkdir="$(grep -n 'need_sudo mkdir' install.sh || true)"
+[ -z "$bare_privileged_mkdir" ] \
+  || fail "install.sh creates a privileged directory without stating its mode, leaving it to sudo's umask (use 'install -d -m 0755'): $bare_privileged_mkdir"
 
 if [ "$failures" -ne 0 ]; then
   echo "FAILED: $failures check(s)" >&2
