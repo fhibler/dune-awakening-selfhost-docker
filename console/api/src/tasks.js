@@ -416,6 +416,11 @@ export function buildSelfUpdateHelperDockerArgs({
       // other client reaches it through.
       "-v", engine.mountSuffix ? `${hostRepoRoot}:/repo:${engine.mountSuffix}` : `${hostRepoRoot}:/repo`,
       "-v", `${hostEngineSocket}:/var/run/docker.sock`,
+      // Podman refuses a container_t process the connectto on that socket, so
+      // without this the helper cannot reach the engine it was created to
+      // drive. Empty only when the seam could not be read; the Docker value is
+      // Docker's own default and changes nothing there.
+      ...(engine.socketSecurityOpt ? ["--security-opt", engine.socketSecurityOpt] : []),
       // The helper builds images with Compose, and a detached container
       // inherits nothing from whatever resolved the seam, so the decision has
       // to travel in the argv.

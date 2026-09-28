@@ -31,6 +31,12 @@ services:
       - dune-cache:/srv/dune/cache
       - dune-generated:/srv/dune/generated
       - dune-work:/work
+    # On Podman this is `label=disable`: a container_t process may not
+    # connectto the compat socket's listener, so without it the orchestrator
+    # cannot reach the engine on an enforcing host. The Docker default is
+    # `no-new-privileges:false`, which is what Docker already did here.
+    security_opt:
+      - "${DUNE_ENGINE_SOCKET_SECURITY_OPT:-no-new-privileges:false}"
     stdin_open: true
     tty: true
     command: ["dune", "daemon"]

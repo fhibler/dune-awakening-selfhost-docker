@@ -64,6 +64,30 @@ if [ -n "$network_hits" ]; then
   printf '%s\n' "$network_hits" | sed 's/^/  /' >&2
 fi
 
+# Podman runs a container as `container_t`, which has no `connectto` for the
+# compat socket's listener, so a container that bind-mounts the socket cannot
+# reach the engine at all unless it carries the seam's security_opt. The denial
+# is dontaudit'ed, so the only symptom is "Cannot connect to the Docker daemon"
+# over an empty audit log. Swept over every runtime script rather than the start
+# scripts alone: the autoscaler, the Coriolis Coordinator, the deferred
+# reconcile and the console self-update helper all mount it, and they are
+# spawned from four different files.
+socket_run_hits="$(find runtime/scripts -name '*.sh' -print0 | xargs -0 awk '
+  /docker run/ { collecting = 1; start = FNR; mounts_socket = 0; has_secopt = 0 }
+  collecting {
+    if ($0 ~ /-v/ && $0 ~ /\/var\/run\/docker\.sock/) mounts_socket = 1
+    if ($0 ~ /--security-opt/) has_secopt = 1
+    if ($0 !~ /\\$/) {
+      collecting = 0
+      if (mounts_socket && !has_secopt) printf "%s:%d\n", FILENAME, start
+    }
+  }
+')"
+if [ -n "$socket_run_hits" ]; then
+  fail "a container mounts the engine socket without DUNE_ENGINE_SOCKET_SECURITY_OPT and cannot reach the engine on an enforcing Podman host"
+  printf '%s\n' "$socket_run_hits" | sed 's/^/  /' >&2
+fi
+
 # The Console's memory balancer reads memory.swap.current from inside a game
 # server and takes it for that server's own usage, which is only true under a
 # private cgroup namespace. Podman's default comes from containers.conf and has

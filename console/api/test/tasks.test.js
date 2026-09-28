@@ -183,15 +183,21 @@ function selfUpdateHelperArgs(overrides = {}) {
 }
 
 test("web self-update helper emits an unchanged Docker argv", () => {
-  const args = selfUpdateHelperArgs({ engine: { kind: "docker", mountSuffix: "", buildKit: null } });
+  const args = selfUpdateHelperArgs({ engine: { kind: "docker", mountSuffix: "", buildKit: null, socketSecurityOpt: "no-new-privileges:false" } });
   assert(args.includes("/home/ubuntu/dune-awakening-selfhost-docker:/repo"));
   assert(args.includes("/var/run/docker.sock:/var/run/docker.sock"));
+  // Docker's own default, so the helper behaves exactly as it did before the
+  // flag was passed at all.
+  assert.deepEqual(args.slice(args.indexOf("--security-opt"), args.indexOf("--security-opt") + 2), ["--security-opt", "no-new-privileges:false"]);
   assert.deepEqual(args.filter((arg) => arg.startsWith("DOCKER_BUILDKIT")), []);
   assert.deepEqual(args.filter((arg) => arg.startsWith("DUNE_ENGINE_")), []);
 });
 
 test("web self-update helper relabels the repo mount and disables BuildKit on Podman", () => {
-  const args = selfUpdateHelperArgs({ engine: { kind: "podman", mountSuffix: "z", buildKit: "0" } });
+  const args = selfUpdateHelperArgs({ engine: { kind: "podman", mountSuffix: "z", buildKit: "0", socketSecurityOpt: "label=disable" } });
+  // The helper's whole job is to drive the engine through that socket, and a
+  // container_t process has no connectto for its listener.
+  assert.deepEqual(args.slice(args.indexOf("--security-opt"), args.indexOf("--security-opt") + 2), ["--security-opt", "label=disable"]);
   assert(args.includes("/home/ubuntu/dune-awakening-selfhost-docker:/repo:z"));
   assert(!args.includes("/home/ubuntu/dune-awakening-selfhost-docker:/repo"));
   assert.deepEqual(args.slice(args.indexOf("DOCKER_BUILDKIT=0") - 1, args.indexOf("DOCKER_BUILDKIT=0") + 1), ["-e", "DOCKER_BUILDKIT=0"]);

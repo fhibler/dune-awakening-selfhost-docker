@@ -58,6 +58,7 @@ if ! docker run -d --rm --name "$HELPER_NAME" \
   --network host \
   --user "${DUNE_HOST_UID:-0}:${DUNE_HOST_GID:-0}" \
   --group-add "${DOCKER_SOCKET_GID:-0}" \
+  --security-opt "$DUNE_ENGINE_SOCKET_SECURITY_OPT" \
   -v "$(dune_engine_mount "$host_root" /repo)" \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -w /repo \

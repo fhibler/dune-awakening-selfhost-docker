@@ -70,6 +70,7 @@ docker run -d \
   --user "${HOST_UID}:${HOST_GID}" \
   "${group_args[@]}" \
   --entrypoint bash \
+  --security-opt "$DUNE_ENGINE_SOCKET_SECURITY_OPT" \
   -e "DUNE_CONTAINER_REPO_ROOT=$CONTAINER_REPO_ROOT" \
   -e "DUNE_HOST_REPO_ROOT=$HOST_REPO_ROOT" \
   -e "DUNE_HOST_UID=$HOST_UID" \

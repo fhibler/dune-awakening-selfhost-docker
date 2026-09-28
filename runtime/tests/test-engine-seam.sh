@@ -276,6 +276,21 @@ assert_value "" "$(label_disable_case docker)" \
 assert_value "--security-opt label=disable" "$(label_disable_case podman)" \
   "the host-root helpers never relabel / on Podman"
 
+socket_security_opt_case() {
+  engine_case "
+    fake_engine_start $1
+    source runtime/scripts/lib/engine.sh
+    printf '%s' \"\$DUNE_ENGINE_SOCKET_SECURITY_OPT\"
+  "
+}
+
+# Not empty on Docker: compose cannot spell an absent list entry, so the value
+# has to be one Docker treats as its own default.
+assert_value "no-new-privileges:false" "$(socket_security_opt_case docker)" \
+  "socket mounters keep Docker's own default"
+assert_value "label=disable" "$(socket_security_opt_case podman)" \
+  "socket mounters get the label separation turned off, without which container_t cannot connectto the compat socket"
+
 if [ "$failures" -ne 0 ]; then
   printf '%s test(s) failed\n' "$failures" >&2
   exit 1

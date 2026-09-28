@@ -112,12 +112,16 @@ docker_out="$tmpdir/docker-orchestrator.json"
 render_for_engine docker "" docker-compose.yml "$docker_out"
 assert_contains "$docker_out" '"restart": "unless-stopped"' "orchestrator keeps unless-stopped on Docker"
 assert_contains "$docker_out" '"/var/run/docker.sock:/var/run/docker.sock"' "orchestrator keeps the Docker socket bind"
+# `security_opt` is new on both services; compose cannot render an absent list
+# entry, so the Docker value has to be the one Docker already applied by itself.
+assert_contains "$docker_out" '"no-new-privileges:false"' "orchestrator's security_opt is a no-op on Docker"
 assert_contains "$docker_out" '"max-file": "3"' "orchestrator keeps its json-file max-file on Docker"
 
 docker_web="$tmpdir/docker-web.json"
 render_for_engine docker "" docker-compose.web.yml "$docker_web"
 assert_contains "$docker_web" '"restart": "unless-stopped"' "console keeps unless-stopped on Docker"
 assert_contains "$docker_web" '"/var/run/docker.sock:/var/run/docker.sock"' "console keeps the Docker socket bind"
+assert_contains "$docker_web" '"no-new-privileges:false"' "console's security_opt is a no-op on Docker"
 
 docker_probe="$tmpdir/docker-probe.json"
 render_for_engine docker "" docker-compose.public-probe.yml "$docker_probe"
@@ -130,11 +134,15 @@ render_for_engine podman "unix:///run/podman/podman.sock" docker-compose.yml "$p
 assert_contains "$podman_out" '"restart": "always"' "orchestrator becomes always on Podman"
 assert_contains "$podman_out" '"/run/podman/podman.sock:/var/run/docker.sock"' \
   "orchestrator binds the Podman socket without moving the container path"
+# Without this the orchestrator is container_t, has no connectto for the compat
+# socket's listener, and cannot reach the engine at all on an enforcing host.
+assert_contains "$podman_out" '"label=disable"' "orchestrator can connect to the Podman socket"
 
 podman_web="$tmpdir/podman-web.json"
 render_for_engine podman "unix:///run/podman/podman.sock" docker-compose.web.yml "$podman_web"
 assert_contains "$podman_web" '"restart": "always"' "console becomes always on Podman"
 assert_contains "$podman_web" '"/run/podman/podman.sock:/var/run/docker.sock"' "console binds the Podman socket"
+assert_contains "$podman_web" '"label=disable"' "console can connect to the Podman socket"
 
 podman_probe="$tmpdir/podman-probe.json"
 render_for_engine podman "unix:///run/podman/podman.sock" docker-compose.public-probe.yml "$podman_probe"

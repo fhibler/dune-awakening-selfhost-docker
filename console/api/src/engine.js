@@ -21,7 +21,7 @@ const ENGINE_SEAM = "runtime/scripts/lib/engine.sh";
 // be read at all -- a console started outside the repository, or a shell that
 // failed -- so an unresolvable engine behaves exactly as it does today instead
 // of guessing at Podman.
-const UNDETECTED = Object.freeze({ kind: "docker", mountSuffix: "", buildKit: null });
+const UNDETECTED = Object.freeze({ kind: "docker", mountSuffix: "", buildKit: null, socketSecurityOpt: "" });
 
 let detected = null;
 
@@ -40,7 +40,10 @@ export function detectContainerEngine({ env = process.env, repoRoot = resolveRep
     mountSuffix: variables.DUNE_ENGINE_MOUNT_SUFFIX || "",
     // The seam sets DOCKER_BUILDKIT only where Compose must not attempt a
     // BuildKit build. Null means it left the CLI's own default alone.
-    buildKit: variables.DOCKER_BUILDKIT ?? null
+    buildKit: variables.DOCKER_BUILDKIT ?? null,
+    // What a container that bind-mounts the engine socket must carry. Empty
+    // only when the seam could not be read, which is the UNDETECTED case.
+    socketSecurityOpt: variables.DUNE_ENGINE_SOCKET_SECURITY_OPT || ""
   });
 }
 

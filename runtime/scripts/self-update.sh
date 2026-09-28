@@ -1352,6 +1352,7 @@ rebuild_web_console_with_helper() {
     --name "$helper_name" \
     --user "${DUNE_HOST_UID:-0}:${DUNE_HOST_GID:-0}" \
     --group-add "${DOCKER_SOCKET_GID:-0}" \
+    --security-opt "$DUNE_ENGINE_SOCKET_SECURITY_OPT" \
     --network host \
     -v "$HOST_ROOT_DIR:/repo" \
     -v /var/run/docker.sock:/var/run/docker.sock \

@@ -135,6 +135,21 @@ dune_engine_detect() {
     # No `podman builder prune`, and the compat API does not implement
     # /build/prune either.
     DUNE_ENGINE_SUPPORTS_BUILDER_PRUNE='0'
+    # The `security_opt` every container that bind-mounts the engine socket
+    # needs. Podman runs a container as `container_t`, which has no `connectto`
+    # for the compat socket's listener (`container_runtime_t`), so on an
+    # enforcing host none of them can reach the engine at all: the orchestrator
+    # cannot load the Funcom image tarballs, the autoscaler cannot spawn a map
+    # and the console cannot run a single stack command. The denial is
+    # dontaudit'ed in the shipped policy, so it leaves no AVC -- the only
+    # symptom is "Cannot connect to the Docker daemon" over an empty audit log,
+    # and `semodule -DB` is needed to see it at all.
+    #
+    # This is the same concession dune_engine_label_disable_args already makes
+    # for the privileged host-systemd helpers, and it concedes as little here:
+    # a process holding the engine socket is root-equivalent whatever its
+    # SELinux label.
+    DUNE_ENGINE_SOCKET_SECURITY_OPT='label=disable'
   else
     DUNE_ENGINE_RESTART_POLICY='unless-stopped'
     DUNE_ENGINE_SYSTEMD_UNIT='docker.service'
@@ -142,6 +157,13 @@ dune_engine_detect() {
     DUNE_ENGINE_SUPPORTS_LOG_MAX_FILE='1'
     DUNE_ENGINE_IMAGE_PREFIX=''
     DUNE_ENGINE_SUPPORTS_BUILDER_PRUNE='1'
+    # Docker's own default, stated rather than omitted. Compose has no way to
+    # spell an absent list entry, so the socket-mounting services carry one
+    # interpolated `security_opt` unconditionally, and this is the value that
+    # leaves the Docker path behaving exactly as it did with no `security_opt`
+    # at all. The `docker run` call sites spell the same variable as a
+    # `--security-opt` flag, for one name per concept rather than two.
+    DUNE_ENGINE_SOCKET_SECURITY_OPT='no-new-privileges:false'
   fi
 
   DUNE_ENGINE_READY=1
@@ -149,6 +171,7 @@ dune_engine_detect() {
   export DUNE_ENGINE_SYSTEMD_UNIT DUNE_ENGINE_MOUNT_SUFFIX
   export DUNE_ENGINE_SUPPORTS_LOG_MAX_FILE DUNE_ENGINE_IMAGE_PREFIX
   export DUNE_ENGINE_SUPPORTS_BUILDER_PRUNE DUNE_ENGINE_READY
+  export DUNE_ENGINE_SOCKET_SECURITY_OPT
 
   if [ "$DUNE_ENGINE_KIND" = "podman" ]; then
     # Compose v2 against the compat socket cannot use BuildKit: Podman does not

@@ -124,6 +124,7 @@ behave exactly as it does today.**
 | `DUNE_ENGINE_SUPPORTS_LOG_MAX_FILE` | `1` | `0` | Podman's `json-file` driver accepts `max-file` and ignores it (`G0-1`) |
 | `DUNE_ENGINE_IMAGE_PREFIX` | *(empty)* | `localhost/` | locally built images normalise with the prefix |
 | `DUNE_ENGINE_SUPPORTS_BUILDER_PRUNE` | `1` | `0` | the compat API has no `/build/prune`, so the Docker spelling cannot reach it (`P2`) |
+| `DUNE_ENGINE_SOCKET_SECURITY_OPT` | `no-new-privileges:false` | `label=disable` | `container_t` has no `connectto` for the compat socket's listener (`G0-2`) |
 
 Helpers: `dune_engine_mount SRC DEST [OPTS]` builds a whole `-v` value with the
 relabel appended last; `dune_engine_label_disable_args` yields
@@ -205,8 +206,43 @@ label locks the others out. Every path-valued `-v` goes through
 
 **The engine socket is never relabelled.** It belongs to the host, not to this
 stack; relabelling it would rewrite the context every other client reaches it
-through. Containers that mount it get `--security-opt label=disable` instead,
-via `dune_engine_label_disable_args`.
+through. Its mount is the one `-v` that deliberately skips
+`dune_engine_mount`'s suffix.
+
+**Mounting the socket is not enough to reach it.** Podman runs a container as
+`container_t`, which has no `connectto` for the compat socket's listener
+(`container_runtime_t`), so on an enforcing host every container that mounts
+the socket is refused — the orchestrator cannot load the Funcom image tarballs,
+the autoscaler cannot spawn a map, the Console cannot run a single stack
+command. Correct `group_add` and a correct socket GID change nothing: the
+denial is in the policy, not the file mode.
+
+It is also invisible. The shipped policy `dontaudit`s the denial, so it
+produces **no AVC at all**: the entire symptom is `Cannot connect to the Docker
+daemon` over an empty audit log, and `semodule -DB` is needed before the denial
+can even be seen. `G0-2` spent most of its time there.
+
+The fix is `DUNE_ENGINE_SOCKET_SECURITY_OPT`, carried by every socket mounter:
+`orchestrator` and `redblink-dune-docker-console` through Compose's
+`security_opt`; the autoscaler, the Coriolis Coordinator, the deferred
+reconcile and both spawners of the Console's self-update helper
+(`self-update.sh` and `console/api/src/tasks.js`) through `--security-opt` in
+the argv. Compose cannot render an absent list entry, so the Docker value is
+`no-new-privileges:false` — Docker's own default, which leaves that path
+behaving exactly as it did — and the `docker run` sites spell the same variable
+rather than a second one. This is the same concession
+`dune_engine_label_disable_args` already makes for the privileged host-systemd
+helpers, and it concedes as little: per section 3, a process holding the engine
+socket is root-equivalent whatever its SELinux label.
+
+The alternative is a host policy module (`allow container_t
+container_runtime_t:unix_stream_socket connectto;`). It works, and it is
+narrower, but it is host state this repository does not install and cannot
+verify, so a deployment that omitted it would fail exactly the way described
+above. `runtime/tests/test-podman-engine-call-sites.sh` sweeps every `docker
+run` in `runtime/scripts/` for a socket mount without the flag, so a new
+mounter is caught the day it lands; `tests/compose-engine-render-test.sh` and
+`console/api/test/` cover the declarative and JavaScript halves.
 
 **The compat API can report an empty volume mountpoint** for a volume that is
 not currently mounted. `init.sh`'s Postgres reset now *exits* on that rather

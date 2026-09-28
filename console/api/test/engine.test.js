@@ -12,12 +12,12 @@ const repoRoot = fileURLToPath(new URL("../../../", import.meta.url));
 
 test("container engine detection reads Podman's behaviour from the shell seam", () => {
   const engine = detectContainerEngine({ env: { PATH: process.env.PATH, DUNE_CONTAINER_ENGINE: "podman" }, repoRoot });
-  assert.deepEqual(engine, { kind: "podman", mountSuffix: "z", buildKit: "0" });
+  assert.deepEqual(engine, { kind: "podman", mountSuffix: "z", buildKit: "0", socketSecurityOpt: "label=disable" });
 });
 
 test("container engine detection leaves Docker exactly as it was", () => {
   const engine = detectContainerEngine({ env: { PATH: process.env.PATH, DUNE_CONTAINER_ENGINE: "docker" }, repoRoot });
-  assert.deepEqual(engine, { kind: "docker", mountSuffix: "", buildKit: null });
+  assert.deepEqual(engine, { kind: "docker", mountSuffix: "", buildKit: null, socketSecurityOpt: "no-new-privileges:false" });
 });
 
 test("container engine detection ignores stale seam values inherited from the caller", () => {
@@ -31,7 +31,7 @@ test("container engine detection ignores stale seam values inherited from the ca
     },
     repoRoot
   });
-  assert.deepEqual(engine, { kind: "docker", mountSuffix: "", buildKit: null });
+  assert.deepEqual(engine, { kind: "docker", mountSuffix: "", buildKit: null, socketSecurityOpt: "no-new-privileges:false" });
 });
 
 test("container engine detection falls back to Docker behaviour when the seam cannot be read", () => {
@@ -39,5 +39,7 @@ test("container engine detection falls back to Docker behaviour when the seam ca
     env: { PATH: process.env.PATH, DUNE_CONTAINER_ENGINE: "podman" },
     repoRoot: mkdtempSync(join(tmpdir(), "dune-engine-seam-"))
   });
-  assert.deepEqual(engine, { kind: "docker", mountSuffix: "", buildKit: null });
+  // An unreadable seam answered nothing, so the helper argv carries no
+  // security_opt at all -- which is what it carried before the seam existed.
+  assert.deepEqual(engine, { kind: "docker", mountSuffix: "", buildKit: null, socketSecurityOpt: "" });
 });
