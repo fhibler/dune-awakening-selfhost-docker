@@ -874,11 +874,18 @@ probe_p6() {
     return 0
   fi
 
+  # The listener is BusyBox `nc` looping one connection at a time: the probe
+  # needs two connections, the self-check below and tcp_endpoint_reachable's.
+  # alpine:3.22 ships neither `httpd` nor `wget`, so `nc` is what this image
+  # has -- and tcp_endpoint_reachable is a TCP connect, so a TCP listener is
+  # all the question needs. No `--rm`: a container that dies on startup takes
+  # its logs with it, and then the transcript cannot say why.
   container="dune-gate-p6-$$"
-  run docker run -d --rm --name "$container" -p "127.0.0.1:$port:80" \
+  run docker run -d --name "$container" -p "127.0.0.1:$port:80" \
     docker.io/library/alpine:3.22 \
-    sh -c 'mkdir -p /www && printf ok > /www/index.html && httpd -f -p 80 -h /www'
+    sh -c 'while true; do printf ok | nc -l -p 80; done'
   if [ "$RUN_STATUS" -ne 0 ]; then
+    run docker rm -f "$container"
     verdict INCONCLUSIVE "the probe container would not start, so nothing was learned about loopback publishing"
     return 0
   fi
@@ -887,10 +894,11 @@ probe_p6() {
 
   # Prove the listener exists before blaming the publish. A container that
   # never listened would otherwise read as an unreachable published port.
-  run docker exec "$container" wget -qO- http://127.0.0.1:80/
+  run docker exec "$container" nc 127.0.0.1 80
   if [ "$RUN_STATUS" -ne 0 ]; then
+    run docker logs "$container"
     run docker rm -f "$container"
-    verdict INCONCLUSIVE "the probe container never listened on its own port, so the published mapping was never exercised"
+    verdict INCONCLUSIVE "the probe container never listened on its own port, so the published mapping was never exercised — its log is in the block above"
     return 0
   fi
 
