@@ -60,6 +60,7 @@ cp "$repo_root/runtime/scripts/compose-project.sh" "$test_root/runtime/scripts/"
 cp "$repo_root/runtime/scripts/secrets-cli.sh" "$test_root/runtime/scripts/"
 cp "$repo_root/runtime/scripts/lib/secrets.sh" "$test_root/runtime/scripts/lib/"
 cp "$repo_root/runtime/scripts/lib/secrets_aead.py" "$test_root/runtime/scripts/lib/"
+cp "$repo_root/runtime/scripts/lib/engine.sh" "$test_root/runtime/scripts/lib/"
 
 cd "$test_root"
 
