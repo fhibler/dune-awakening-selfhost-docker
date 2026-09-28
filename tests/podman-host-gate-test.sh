@@ -448,6 +448,31 @@ check "…so seven probes answered" 7 "$(count_matching '^\*\*Verdict:\*\* ANSWE
 check "…and the run exits 0" 0 "$GATE_STATUS"
 fake_engine_stop
 
+# ---------------------------------------------------------------------------
+# 6. G0-3 on a host with a metrics stack but no stack to measure
+# ---------------------------------------------------------------------------
+
+# cAdvisor naming no `dune-*` container has two causes: `--docker_only` cannot
+# see them, or there are none. Only the first answers G0-3, and a host running
+# other workloads looks exactly like the second. The probe must abstain rather
+# than report C9 as required on the strength of an absent subject.
+new_fixture
+stub_podman
+metrics_stack_exits 0
+stub_curl_metrics 'container_cpu_usage_seconds_total{name="paperless-web"} 4.2'
+use_fake_engine
+fake_engine_respond "ps --format {{.Names}}" <<'OUT'
+pterodactyl-panel
+paperless-web
+OUT
+run_gate --only G0-3
+
+check "G0-3 abstains when no dune container is running" "INCONCLUSIVE" "$(verdict_of G0-3)"
+assert_contains "$(verdict_text_of G0-3)" "no \`dune-*\` container is running" \
+  "…and says the subject was missing, not that C9 is required"
+check "…so the run exits 2, not 0" 2 "$GATE_STATUS"
+fake_engine_stop
+
 if [ "$failures" -ne 0 ]; then
   echo "podman host gate: $failures failure(s)" >&2
   exit 1

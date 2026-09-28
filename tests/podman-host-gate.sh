@@ -553,6 +553,15 @@ probe_g0_3() {
     return 0
   fi
 
+  # A negative result only means something if there was something to name. On a
+  # host with no `dune-*` container running, "cAdvisor names none" is a fact
+  # about the host, not about `--docker_only`, and reporting C9 as required on
+  # that basis would be a vacuous pass.
+  if ! running_names | grep -q '^dune-'; then
+    verdict INCONCLUSIVE "the metrics stack is up but no \`dune-*\` container is running for cAdvisor to name, so an empty scrape would say nothing about \`--docker_only\`. Bring the stack up and re-run with \`--only G0-3\`"
+    return 0
+  fi
+
   run_shell "curl -s localhost:8080/metrics | grep -c '^container_cpu_usage_seconds_total'"
   run_shell "curl -s localhost:8080/metrics | grep -o 'name=\"dune-[a-z-]*\"' | sort -u"
   names="$RUN_OUT"
