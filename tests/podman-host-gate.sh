@@ -364,6 +364,23 @@ probe_g0_2() {
     return 0
   fi
 
+  # The three exec assertions below name three containers, but only two of them
+  # come up with the base stack: `dune-prometheus` ships in the optional
+  # docker-compose.metrics.yml overlay, and `dune-autoscaler` is spawned by the
+  # orchestrator rather than declared in any compose file. Without this, a host
+  # running the base stack answers "Prometheus cannot read its config" -- a
+  # confident BLOCKER against A3 produced by a container that was never asked to
+  # exist. An absent subject is a missing precondition, not a finding.
+  local missing=""
+  local required
+  for required in dune-prometheus dune-autoscaler; do
+    printf '%s\n' "$names" | grep -qx "$required" || missing="${missing}${required} "
+  done
+  if [ -n "$missing" ]; then
+    verdict INCONCLUSIVE "the stack is up but §14.11's exec subjects are not all running (missing: ${missing% }). \`dune-prometheus\` needs the metrics overlay (\`-f docker-compose.metrics.yml\`) and \`dune-autoscaler\` is spawned by the orchestrator once the stack is initialised. Start them, then re-run with \`--only G0-2\`"
+    return 0
+  fi
+
   run_shell "ausearch -m avc -ts recent --raw | wc -l"
   if printf '%s\n' "$RUN_OUT" | grep -qiE 'permission denied|operation not permitted|must be root|error opening'; then
     verdict INCONCLUSIVE "\`ausearch\` cannot read the audit log on this host, so no AVC scan below would mean anything"

@@ -259,8 +259,23 @@ else
     else
       grep -Fqx 'ListenStream=' "$dropin" \
         || fail "the drop-in does not reset ListenStream, so podman gets two activation descriptors and refuses to start"
-      grep -Fqx 'ListenStream=/var/run/docker.sock' "$dropin" \
-        || fail "the drop-in does not publish the compat socket at /var/run/docker.sock"
+      # The next three assertions are one defect: without them podman.socket
+      # starts at install time and then never restarts, failing every later
+      # start with "Failed to create listening socket (/run/docker.sock):
+      # Address already in use" and leaving the host with no compat API.
+      #
+      # systemd does not unlink an AF_UNIX listener on stop unless told to, and
+      # it rewrites a listen path below the legacy /var/run/ to its /run/ form
+      # -- after which its cleanup no longer matches, so even RemoveOnStop=yes
+      # survives only a single stop/start. Both the canonical path and the
+      # explicit removal are required; either one alone still strands the host.
+      grep -Fqx 'ListenStream=/run/docker.sock' "$dropin" \
+        || fail "the drop-in does not publish the compat socket at the canonical /run/docker.sock"
+      if grep -Fqx 'ListenStream=/var/run/docker.sock' "$dropin"; then
+        fail "the drop-in listens on the /var/run/ alias, which systemd rewrites to /run/ and then cannot clean up, so podman.socket stops restarting"
+      fi
+      grep -Fqx 'RemoveOnStop=yes' "$dropin" \
+        || fail "the drop-in does not set RemoveOnStop=yes, so the stale socket inode survives a stop and the next start cannot bind it"
       [ "$(grep -c '^ListenStream=' "$dropin")" -eq 2 ] \
         || fail "the drop-in does not leave exactly one listening socket"
       grep -Fqx 'SocketGroup=podman' "$dropin" \

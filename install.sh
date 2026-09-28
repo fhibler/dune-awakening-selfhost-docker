@@ -543,11 +543,29 @@ configure_podman_socket() {
 #
 # The group below is Podman's analogue of the docker group: it is the only
 # thing standing between a process and the engine, and it is root-equivalent.
+#
+# The last two lines are what make the socket restartable. Without them it
+# comes up once, at install time, and every later start fails with
+#   podman.socket: Failed to create listening socket (/run/docker.sock):
+#   Address already in use
+# leaving the host with no compat API until someone rm's the file by hand.
+#
+# RemoveOnStop=yes: systemd does not unlink an AF_UNIX listener on stop by
+# default. The stale socket inode survives, nothing holds it -- \`ss -lx\` shows
+# no listener and \`fuser\` no opener -- and the next bind() still refuses it.
+#
+# ListenStream= names /run/docker.sock rather than the /var/run/ alias every
+# bind mount in this repo spells. They are the same file (/var/run is a symlink
+# to /run), but systemd rewrites a listen path "below legacy directory
+# /var/run/" to its /run/ form, and its cleanup then stops matching reliably:
+# with the alias, even RemoveOnStop=yes survives only a single stop/start
+# before the failure returns. Spelling the canonical path keeps it idempotent.
 [Socket]
 ListenStream=
-ListenStream=/var/run/docker.sock
+ListenStream=/run/docker.sock
 SocketGroup=${ENGINE_SOCKET_GROUP}
 SocketMode=0660
+RemoveOnStop=yes
 EOF
 )"
 
