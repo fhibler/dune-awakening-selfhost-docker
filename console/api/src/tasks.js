@@ -10,6 +10,7 @@ import { summarizeMapWriteFlush } from "./services/mapWriteSummary.js";
 import { withTimeout } from "./services/withTimeout.js";
 import { clampInt } from "./jsonStore.js";
 import { redactDbError } from "./db.js";
+import { recordTaskRestart } from "./services/restartHistory.js";
 
 // Operations that leave a map down with the database still reachable, so
 // anything queued for that map can be applied before it comes back up. "stop"
@@ -158,6 +159,9 @@ export class TaskManager {
         this.updateCheckCache.invalidate();
       }
       this.completeTaskSucceeded(task, lastCode);
+      try { recordTaskRestart(this.config, task, payload); } catch (error) {
+        console.error(`Restart history write failed: ${error?.message || "Unexpected error."}`);
+      }
     } catch (error) {
       task.status = "failed";
       task.exitCode = Number.isInteger(error.code) ? error.code : null;
@@ -173,6 +177,9 @@ export class TaskManager {
       // Dropped, not run: a preview that failed must not authorize an apply.
       this.successHooks.delete(task.id);
       this.emit(task, task.errorMessage);
+      try { recordTaskRestart(this.config, task, payload); } catch (historyError) {
+        console.error(`Restart history write failed: ${historyError?.message || "Unexpected error."}`);
+      }
     }
   }
 

@@ -466,6 +466,16 @@ test("a stored write level does not reach the whole-host backup actions", () => 
   }
 });
 
+test("a stored bases write level does not reach any base-backup transfer or delete action", () => {
+  for (const action of ["bases:import-backup", "bases:edit-backup", "bases:export-backup", "bases:delete-backup"]) {
+    assert.equal(scopeAllowsAction("bases", "write", action), false, `write must not cover ${action}`);
+    assert.equal(scopeAllowsAction("bases", "read", action), false, `read must not cover ${action}`);
+    assert.equal(scopeAllowsAction("bases", [action], action), true);
+  }
+  // Listing stays under bases:read.
+  assert.equal(scopeAllowsAction("bases", "read", "bases:read"), true);
+});
+
 test("the excluded actions can still be granted by naming them", () => {
   // The point is that the operator has to choose them, not that they are
   // unreachable -- an explicit action list is a deliberate act.

@@ -19,9 +19,25 @@ assert_contains() {
 }
 
 SCRIPT="runtime/scripts/publish-sietch-overrides.sh"
+SIETCH_SCRIPT="runtime/scripts/sietches.sh"
 AUTOSCALER_SCRIPT="runtime/scripts/autoscaler.sh"
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
+
+# Published browser state must use the same merged UserEngine identity that the
+# game server receives. Reading the legacy JSON mirror here caused scheduled
+# restarts and Console updates to republish stale names and empty passwords.
+assert_contains "$SCRIPT" 'identity = usersettings.merged_partition_engine_values('
+assert_contains "$SCRIPT" 'display_name = str(identity.get("server_display_name") or "").strip()'
+assert_contains "$SCRIPT" 'password = str(identity.get("server_login_password") or "")'
+if grep -Eq 'display_name = cfg\.get\("display_name"|password = cfg\.get\("password"' "$SCRIPT"; then
+  fail "$SCRIPT must not publish identity fields from the legacy Sietch JSON mirror"
+fi
+assert_contains "$SIETCH_SCRIPT" 'def effective_identity(map_name, pid):'
+assert_contains "$SIETCH_SCRIPT" 'identity.get("server_login_password")'
+if grep -Fq 'if entry.get("password"):' "$SIETCH_SCRIPT"; then
+  fail "$SIETCH_SCRIPT must not restart a Sietch with a password from the legacy JSON mirror"
+fi
 
 # Valid cached credentials remain in use until RabbitMQ rejects them. Refreshing
 # them solely because they are five minutes old caused the observed cadence.

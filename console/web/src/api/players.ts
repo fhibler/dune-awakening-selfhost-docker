@@ -3,10 +3,18 @@ import type { Task } from "./setup";
 
 type PlayersListResult = { rows: Record<string, unknown>[]; totalCount: number; totalPlayers: number; capabilities: Record<string, unknown>; reason?: string };
 
+export type PlayerListSettings = {
+  settings: { inactiveWeeks: number | null };
+  defaults: { inactiveWeeks: number | null };
+  limits: { inactiveWeeks: { min: number; max: number } };
+  source: "default" | "console";
+  canConfigure?: boolean;
+};
+
 const PLAYERS_ALL_PAGE_SIZE = 200;
 
 export const playersApi = {
-  list: (params: { q?: string; page?: number; pageSize?: number; status?: "all" | "online" | "offline" | "banned"; sortColumn?: string; sortDirection?: "asc" | "desc" } = {}) => {
+  list: (params: { q?: string; page?: number; pageSize?: number; status?: "all" | "online" | "offline" | "banned"; sortColumn?: string; sortDirection?: "asc" | "desc"; recentOnly?: boolean } = {}) => {
     const search = new URLSearchParams();
     if (params.q) search.set("q", params.q);
     if (params.page !== undefined) search.set("page", String(params.page));
@@ -14,6 +22,7 @@ export const playersApi = {
     if (params.status) search.set("status", params.status);
     if (params.sortColumn) search.set("sortColumn", params.sortColumn);
     if (params.sortDirection) search.set("sortDirection", params.sortDirection);
+    if (params.recentOnly) search.set("recentOnly", "1");
     const qs = search.toString();
     return api<PlayersListResult>(`/api/players${qs ? `?${qs}` : ""}`);
   },
@@ -38,6 +47,8 @@ export const playersApi = {
     const result = await api<PlayersListResult>("/api/players/online?page=0&pageSize=1");
     return Number.isFinite(Number(result.totalCount)) ? Number(result.totalCount) : 0;
   },
+  listSettings: () => api<PlayerListSettings>("/api/players/list-settings", { cache: "no-store" }),
+  saveListSettings: (inactiveWeeks: number | null) => post<PlayerListSettings>("/api/players/list-settings", { inactiveWeeks }),
   profile: (playerId: string) => api<Record<string, unknown>>(`/api/players/${encodeURIComponent(playerId)}`),
   inventory: (playerId: string) => api<{ rows: Record<string, unknown>[]; capabilities: Record<string, unknown>; reason?: string }>(`/api/players/${encodeURIComponent(playerId)}/inventory`, { cache: "no-store" }),
   currency: (playerId: string) => api<{ rows: Record<string, unknown>[]; capabilities: Record<string, unknown>; reason?: string }>(`/api/players/${encodeURIComponent(playerId)}/currency`),

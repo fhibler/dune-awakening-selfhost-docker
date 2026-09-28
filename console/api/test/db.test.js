@@ -204,13 +204,18 @@ test("player portal calculates normal and spice generator fuel with their game d
   // Lubricant1 burn 3600s, SpicedFuelCell and Lubricant2 burn 5400s.
   const [baseIdsParam, templates, durations] = calls[0].values;
   assert.deepEqual(baseIdsParam, [133, 200]);
-  assert.deepEqual(templates, ["oil", "spicedfuelcell", "windturbinelubricant1", "windturbinelubricant2"]);
-  assert.deepEqual(durations, [3600, 5400, 3600, 5400]);
+  assert.deepEqual(templates, [
+    "oil", "spicedfuelcell", "windturbinelubricant1", "windturbinelubricant2",
+    "windtrapfilter1", "windtrapfilter2", "windtrapfilter3", "windtrapfilter4"
+  ]);
+  // Windtrap filters: 3h / 8h / 12h / 24h, measured on dune2 and the kovalt dump.
+  assert.deepEqual(durations, [3600, 5400, 3600, 5400, 10800, 28800, 43200, 86400]);
   assert.match(calls[0].text, /requested_claims as/);
   assert.match(calls[0].text, /claim_afe\.actor_id = rc\.actor_id/);
   assert.deepEqual(result.get("133"), {
     fuelCells: 51,
     generatorCount: 2,
+    windtrapCount: 0,
     runtimeSeconds: 10800,
     unstockedCount: 0,
     allGeneratorsUnstocked: false,
@@ -256,7 +261,9 @@ test("generator uptime event doubles all supported consumables and ends automati
   const calls = [];
   const db = { query: async (text, values) => { calls.push({ text, values }); return { rows: [] }; } };
   await portalGeneratorFuel(db, [133], { now: new Date("2026-07-27T00:00:00.000Z") });
-  assert.deepEqual(calls[0].values[2], [7200, 10800, 7200, 10800]);
+  // The event covered generators and turbines only; windtrap filters keep
+  // their measured durations while it runs.
+  assert.deepEqual(calls[0].values[2], [7200, 10800, 7200, 10800, 10800, 28800, 43200, 86400]);
 });
 
 test("player portal reports wind turbines as their own generator types in a stable order", async () => {
@@ -355,11 +362,47 @@ test("player portal matches fuel stock by generator type, never by the burning m
     "fuel:oil",
     "spice:spicedfuelcell",
     "windTurbineOmni:windturbinelubricant1",
-    "windTurbineDirectional:windturbinelubricant2"
+    "windTurbineDirectional:windturbinelubricant2",
+    "windtrap:windtrapfilter1",
+    "windtrap:windtrapfilter2",
+    "largeWindtrap:windtrapfilter3",
+    "largeWindtrap:windtrapfilter4"
   ]);
   // Nothing here needs the universe clock any more, so a missing or empty
   // farm_variables table must not be able to blank out generator data.
   assert.doesNotMatch(calls[0].text, /farm_variables/);
+});
+
+test("windtraps get their own cards but stay out of the base-level generator totals", async () => {
+  const db = {
+    query: async () => ({
+      rows: [
+        // Every generator is empty while a windtrap still holds filters.
+        { base_id: "133", generator_type: "fuel", generator_count: 2, fuel_cells: 0, runtime_seconds: null, unstocked_count: 2 },
+        { base_id: "133", generator_type: "windtrap", generator_count: 1, fuel_cells: 5, runtime_seconds: 144000, unstocked_count: 0 },
+        // A windtrap-only base.
+        { base_id: "200", generator_type: "largeWindtrap", generator_count: 2, fuel_cells: 0, runtime_seconds: null, unstocked_count: 2 }
+      ]
+    })
+  };
+
+  const result = await portalGeneratorFuel(db, [133, 200]);
+  const mixed = result.get("133");
+  const trapsOnly = result.get("200");
+
+  // A stocked windtrap must not hide the "no generators have queued fuel"
+  // alert, nor stand in as the base's lowest power reserve.
+  assert.equal(mixed.generatorCount, 2);
+  assert.equal(mixed.windtrapCount, 1);
+  assert.equal(mixed.fuelCells, 0);
+  assert.equal(mixed.unstockedCount, 2);
+  assert.equal(mixed.allGeneratorsUnstocked, true);
+  assert.equal(mixed.runtimeSeconds, 0);
+  assert.deepEqual(mixed.generators.map((entry) => entry.type), ["fuel", "windtrap"]);
+  assert.equal(trapsOnly.generatorCount, 0);
+  assert.equal(trapsOnly.windtrapCount, 2);
+  assert.equal(trapsOnly.allGeneratorsUnstocked, false);
+  assert.deepEqual(trapsOnly.generators.map((entry) => entry.type), ["largeWindtrap"]);
 });
 
 test("player portal only counts generators it can classify, never defaulting to fuel", async () => {
@@ -376,6 +419,7 @@ test("player portal only counts generators it can classify, never defaulting to 
   // Classification is an explicit allowlist passed as query parameters. An
   // unknown name containing "generator" must not silently become oil-powered.
   assert.match(calls[0].text, /join generator_types gt on gt\.building_type=lower\(p\.building_type\)/);
+  assert.match(calls[0].text, /p\.owner_entity_id=be\.owner_entity_id and p\.is_hologram=false/);
   assert.doesNotMatch(calls[0].text, /like '%generator%'/);
   const buildingPairs = calls[0].values[5].map(
     (type, index) => `${type}:${calls[0].values[6][index]}`
@@ -384,7 +428,9 @@ test("player portal only counts generators it can classify, never defaulting to 
     "fuel:generator_placeable",
     "spice:spicegenerator_placeable",
     "windTurbineOmni:windturbineomnidirectional_placeable",
-    "windTurbineDirectional:windturbinedirectional_placeable"
+    "windTurbineDirectional:windturbinedirectional_placeable",
+    "windtrap:windtrap_placeable",
+    "largeWindtrap:largewindtrap_placeable"
   ]);
   assert.ok(!calls[0].values[6].includes("unknownnewgenerator_placeable"));
 });
@@ -1748,6 +1794,51 @@ test("players sorted by last online rank current players ahead of stored timesta
   assert.match(playerQuery.text, /order by case when actual_online_status = 'Online' then 0 else 1 end asc, last_seen desc, actor_id desc/);
 });
 
+test("recent players filter keeps online players and hides stale or timestamp-less offline rows", async () => {
+  const calls = [];
+  const db = {
+    query: async (text, values = []) => {
+      calls.push({ text, values });
+      if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+      if (text.includes("information_schema.columns")) {
+        return { rows: ["online_status", "last_avatar_activity"].map((column_name) => ({ column_name })) };
+      }
+      if (text.includes("count(distinct dedupe_key)")) return { rows: [{ total_players: 12 }] };
+      return { rows: [{ actor_id: 82, total_count: 4 }] };
+    }
+  };
+
+  const result = await listPlayers(db, { inactiveWeeks: 2 });
+  const playerQuery = calls.find((call) => call.text.includes("from dune.actors") && !call.text.includes("count(distinct dedupe_key)"));
+
+  assert.match(playerQuery.text, /coalesce\(ps\.online_status::text, ''\) = 'Online' or/);
+  assert.match(playerQuery.text, /ps\."last_avatar_activity"::text/);
+  assert.match(playerQuery.text, /current_timestamp - \(\$2::int \* interval '1 week'\)/);
+  assert.deepEqual(playerQuery.values.slice(0, 2), [[], 2]);
+  assert.equal(result.capabilities.inactiveFilterApplied, true);
+  assert.equal(result.capabilities.inactiveWeeks, 2);
+  assert.equal(result.totalPlayers, 12, "the all-time total remains available separately from the visible rows");
+});
+
+test("the explicit banned view is never hidden by the inactivity threshold", async () => {
+  const calls = [];
+  const db = {
+    query: async (text, values = []) => {
+      calls.push({ text, values });
+      if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+      if (text.includes("information_schema.columns")) return { rows: [{ column_name: "online_status" }] };
+      if (text.includes("count(distinct dedupe_key)")) return { rows: [{ total_players: 1 }] };
+      return { rows: [{ actor_id: 82, total_count: 1 }] };
+    }
+  };
+
+  const result = await listPlayers(db, { status: "banned", inactiveWeeks: 2, bannedFlsIds: ["254a06043e9f0b16"] });
+  const playerQuery = calls.find((call) => call.text.includes("from dune.actors") && !call.text.includes("count(distinct dedupe_key)"));
+
+  assert.doesNotMatch(playerQuery.text, /interval '1 week'/);
+  assert.equal(result.capabilities.inactiveFilterApplied, false);
+});
+
 test("players query resolves the game map partition used by configured Sietch names", async () => {
   const calls = [];
   const db = {
@@ -3010,7 +3101,7 @@ test("list bases returns rows with piece and placeable counts and a total count"
   assert.deepEqual(result.rows, [
     // partitionMap/dimensionIndex are empty here because this fake db reports
     // no dune.world_partition -- the guarded branch, not a missing value.
-    { base_id: "1006", name: "Sietch One", base_type: "Sub-Fief", owner_name: "Leader One", map: "TheDeepDesert", partition_id: 8, partitionMap: "", dimensionIndex: 0, x: 100, y: 200, z: 30, piece_count: 589, placeable_count: 126, shared_with: [{ name: "Ally Two", rank: 2, label: "Co-Owner" }], generatorDataAvailable: true, generatorCount: 0, fuelCells: 0, generatorRuntimeSeconds: 0, generatorUptimeMultiplier: 1, generatorUptimeEventLabel: "", generatorUptimeEventEndsAt: "", generatorUnstockedCount: 0, generatorAllUnstocked: false, generators: [] }
+    { base_id: "1006", name: "Sietch One", base_type: "Sub-Fief", owner_name: "Leader One", map: "TheDeepDesert", partition_id: 8, partitionMap: "", dimensionIndex: 0, x: 100, y: 200, z: 30, piece_count: 589, placeable_count: 126, shared_with: [{ name: "Ally Two", rank: 2, label: "Co-Owner" }], generatorDataAvailable: true, generatorCount: 0, windtrapCount: 0, fuelCells: 0, generatorRuntimeSeconds: 0, generatorUptimeMultiplier: 1, generatorUptimeEventLabel: "", generatorUptimeEventEndsAt: "", generatorUnstockedCount: 0, generatorAllUnstocked: false, generators: [] }
   ]);
 });
 
@@ -4146,8 +4237,8 @@ test("inventory delete rejects rows not owned by the selected player", async () 
 
 // Container-item delete. The ownership query is the whole safety story here --
 // it is what keeps a delete inside an allowlisted container at the requested
-// base, and out of the generator/windtrap fuel inventories the Power and Water
-// tabs own -- so most of these assert on it rather than on the happy path.
+// base, and out of the generator fuel and windtrap filter inventories the Power
+// tab owns -- so most of these assert on it rather than on the happy path.
 function fakeContainerDeleteDb(calls, fixtures = {}) {
   const {
     itemRows = [],
@@ -5330,8 +5421,8 @@ test("baseContainerSlots scopes to the base and keeps the container allowlist fi
   await baseContainerSlots(db, 16836, 40001);
   const query = calls.find((call) => call.text.includes("requested_claims"));
 
-  // Dropping any of these would let the overlay reach a generator or windtrap
-  // fuel inventory that the Power and Water tabs own.
+  // Dropping any of these would let the overlay reach a generator fuel or
+  // windtrap filter inventory that the Power tab owns.
   assert.match(query.text, /join inventory_types it on it\.building_type = lower\(p\.building_type\)/);
   assert.match(query.text, /p\.is_hologram = false/);
   assert.match(query.text, /inv\.max_item_count >= 0/);
@@ -8531,7 +8622,10 @@ function fakeMutationDb(calls, fixtures = {}) {
 // genuinely overlap in real time rather than happening to interleave only by
 // microtask ordering, matching the idiom in addonItemGrants.test.js's
 // "serializes concurrent duplicate grants".
-function fakeRefillDb(calls, { devices = [], items = {}, hasPlaceables = true, lockDelayMs = 0 } = {}) {
+function fakeRefillDb(calls, {
+  devices = [], items = {}, burning = {}, hasPlaceables = true, lockDelayMs = 0,
+  placeableColumns = ["id", "owner_entity_id", "building_type", "is_hologram"]
+} = {}) {
   const state = { items: JSON.parse(JSON.stringify(items)), inserts: [], nextId: 9000, locks: new Map() };
   const rawQuery = async (text, values = []) => {
     calls.push({ text, values });
@@ -8542,7 +8636,7 @@ function fakeRefillDb(calls, { devices = [], items = {}, hasPlaceables = true, l
       const columns = {
         inventories: ["id", "actor_id", "max_item_count", "max_item_volume"],
         items: ["inventory_id", "template_id", "stack_size", "quality_level", "position_index", "stats"],
-        placeables: ["id", "owner_entity_id", "building_type"]
+        placeables: placeableColumns
       }[values[1]] || [];
       return { rows: columns.map((column_name) => ({ column_name })) };
     }
@@ -8553,10 +8647,19 @@ function fakeRefillDb(calls, { devices = [], items = {}, hasPlaceables = true, l
     if (text.includes("from dune.inventories") && /for update/i.test(text)) {
       return { rows: [{ id: values[0] }] };
     }
-    if (text.includes("lower(template_id) = lower($2)")) {
-      const rows = (state.items[values[0]] || []).filter((row) =>
-        String(row.template_id).toLowerCase() === String(values[1]).toLowerCase());
-      return { rows };
+    // Accepted-fuel rows, lower-cased by the query. Copies are safe: the
+    // stack-size update below finds the stored row again by id.
+    if (text.includes("lower(template_id) = any($2::text[])")) {
+      const accepted = values[1].map((template) => String(template).toLowerCase());
+      const rows = (state.items[values[0]] || [])
+        .filter((row) => accepted.includes(String(row.template_id).toLowerCase()))
+        .sort((left, right) => left.position_index - right.position_index)
+        .map((row) => ({ ...row, template_id: String(row.template_id).toLowerCase() }));
+      return { rows: /limit 1/.test(text) ? rows.slice(0, 1) : rows };
+    }
+    if (text.includes("'FFuelPoweredPlaceableComponent'->1->'m_FuelBurningId'")) {
+      const name = burning[values[0]];
+      return { rows: name ? [{ template_id: String(name).toLowerCase() }] : [] };
     }
     if (text.startsWith("update dune.items set stack_size")) {
       for (const rows of Object.values(state.items)) {
@@ -8641,17 +8744,21 @@ test("generator refill enumerates only allowlisted placeable building types", as
 
   const [baseId, types, buildingTypes] = calls[0].values;
   assert.equal(baseId, 482);
-  assert.deepEqual(types, ["fuel", "spice", "windTurbineOmni", "windTurbineDirectional"]);
+  assert.deepEqual(types, ["fuel", "spice", "windTurbineOmni", "windTurbineDirectional", "windtrap", "largeWindtrap"]);
   assert.deepEqual(buildingTypes, [
     "generator_placeable",
     "spicegenerator_placeable",
     "windturbineomnidirectional_placeable",
-    "windturbinedirectional_placeable"
+    "windturbinedirectional_placeable",
+    "windtrap_placeable",
+    "largewindtrap_placeable"
   ]);
   // Claim resolution must match portalGeneratorFuel so both agree on which
   // placeables belong to a base.
   assert.match(calls[0].text, /requested_claims as/);
   assert.match(calls[0].text, /claim_afe\.actor_id = rc\.actor_id/);
+  // An unbuilt hologram has no fuel component; a refill must never write into it.
+  assert.match(calls[0].text, /p\.owner_entity_id = be\.owner_entity_id and p\.is_hologram = false/);
 });
 
 test("generator refill fills an empty fuel generator with one full stack of Oil", async () => {
@@ -8758,7 +8865,157 @@ test("generator refill skips a device with no inventory rather than failing the 
 test("generator refill reports a base with no power devices instead of silently succeeding", async () => {
   const calls = [];
   const { db } = fakeRefillDb(calls, { devices: [] });
-  await assert.rejects(() => refillBaseGenerators(db, "", 482), /No generators or wind turbines were found/);
+  await assert.rejects(() => refillBaseGenerators(db, "", 482), /No generators, wind turbines or windtraps were found/);
+});
+
+const WINDTRAP_DEVICE = { placeable_id: "5003", generator_type: "windtrap", inventory_id: "703", max_item_count: 5 };
+const LARGE_WINDTRAP_DEVICE = { placeable_id: "5004", generator_type: "largeWindtrap", inventory_id: "704", max_item_count: 5 };
+
+test("windtrap refill tops up the filter tier the windtrap already holds", async () => {
+  const calls = [];
+  const { state, db } = fakeRefillDb(calls, {
+    devices: [WINDTRAP_DEVICE],
+    items: { 703: [{ id: 21, template_id: "WindTrapFilter1", stack_size: 2, position_index: 0 }] },
+    // A stale burn marker for another tier must not override what is stocked.
+    burning: { 5003: "WindTrapFilter2" }
+  });
+
+  const result = await refillBaseGenerators(db, "", 482);
+
+  assert.deepEqual(state.inserts, []);
+  assert.equal(state.items[703][0].stack_size, 5);
+  assert.deepEqual(result.devices, [{
+    placeableId: "5003", type: "windtrap", label: "Windtrap", fuelName: "Makeshift Filter",
+    before: 2, after: 5, added: 3, capped: false
+  }]);
+});
+
+test("windtrap refill of an empty windtrap follows its burning tier", async () => {
+  const calls = [];
+  const { state, db } = fakeRefillDb(calls, {
+    devices: [LARGE_WINDTRAP_DEVICE],
+    burning: { 5004: "WindTrapFilter3" }
+  });
+
+  await refillBaseGenerators(db, "", 482);
+
+  assert.deepEqual(state.inserts, [{ inventoryId: "704", templateId: "WindTrapFilter3", stackSize: 5, positionIndex: 0 }]);
+});
+
+test("windtrap refill falls back to the default tier when empty and idle", async () => {
+  const calls = [];
+  const { state, db } = fakeRefillDb(calls, {
+    devices: [WINDTRAP_DEVICE, LARGE_WINDTRAP_DEVICE],
+    // An idle windtrap reports the literal 'None', never an accepted tier.
+    burning: { 5003: "None", 5004: "WindTrapFilter1" }
+  });
+
+  const result = await refillBaseGenerators(db, "", 482);
+
+  // A tier the device does not accept (Filter1 in a Large Windtrap) is ignored.
+  assert.deepEqual(state.inserts, [
+    { inventoryId: "703", templateId: "WindTrapFilter2", stackSize: 5, positionIndex: 0 },
+    { inventoryId: "704", templateId: "WindTrapFilter4", stackSize: 5, positionIndex: 0 }
+  ]);
+  assert.deepEqual(result.devices.map((device) => device.fuelName), ["Standard Filter", "Advanced Particulate Filter"]);
+});
+
+test("windtrap refill counts every accepted tier against the five-filter cap", async () => {
+  const calls = [];
+  const { state, db } = fakeRefillDb(calls, {
+    devices: [WINDTRAP_DEVICE],
+    items: { 703: [
+      { id: 31, template_id: "WindTrapFilter2", stack_size: 2, position_index: 0 },
+      { id: 32, template_id: "WindTrapFilter1", stack_size: 2, position_index: 1 }
+    ] }
+  });
+
+  const result = await refillBaseGenerators(db, "", 482);
+
+  // Four filters already fill 20 of 25 volume: only one more fits, on the
+  // first-held tier, and the other tier is left alone.
+  assert.deepEqual(state.inserts, []);
+  assert.equal(state.items[703][0].stack_size, 3);
+  assert.equal(state.items[703][1].stack_size, 2);
+  assert.equal(result.devices[0].before, 4);
+  assert.equal(result.devices[0].added, 1);
+});
+
+test("windtrap refill counts a filter tier it cannot burn against the volume cap", async () => {
+  const calls = [];
+  const { state, db } = fakeRefillDb(calls, {
+    devices: [WINDTRAP_DEVICE],
+    // A Large Windtrap filter stranded in a regular windtrap still takes 15 of
+    // its 25 volume, so only 2 more filters fit.
+    items: { 703: [{ id: 51, template_id: "WindTrapFilter3", stack_size: 3, position_index: 0 }] }
+  });
+
+  await refillBaseGenerators(db, "", 482);
+
+  assert.deepEqual(state.inserts, [{ inventoryId: "703", templateId: "WindTrapFilter2", stackSize: 2, positionIndex: 1 }]);
+  assert.equal(state.items[703][0].stack_size, 3);
+});
+
+test("fuel levels report the lowest generator and windtrap separately", async () => {
+  const { db } = fakeRefillDb([], {
+    devices: [FUEL_DEVICE, WINDTRAP_DEVICE],
+    items: {
+      701: [{ id: 61, template_id: "Oil", stack_size: 499, position_index: 0 }],
+      703: [{ id: 62, template_id: "WindTrapFilter2", stack_size: 2, position_index: 0 }]
+    }
+  });
+  const onlyGenerators = fakeRefillDb([], { devices: [FUEL_DEVICE] }).db;
+
+  const levels = await baseGeneratorFuelLevels(db, "", 482);
+  const generatorsOnly = await baseGeneratorFuelLevels(onlyGenerators, "", 482);
+
+  assert.equal(levels.lowestPercent, 40);
+  assert.equal(levels.lowestGeneratorPercent, 100);
+  assert.equal(levels.lowestWindtrapPercent, 40);
+  // A kind the base does not have is null, never 0.
+  assert.equal(generatorsOnly.lowestWindtrapPercent, null);
+});
+
+test("windtrap fuel level counts every accepted filter tier", async () => {
+  const calls = [];
+  const { db } = fakeRefillDb(calls, {
+    devices: [WINDTRAP_DEVICE],
+    items: { 703: [{ id: 41, template_id: "WindTrapFilter1", stack_size: 4, position_index: 0 }] }
+  });
+
+  const levels = await baseGeneratorFuelLevels(db, "", 482);
+
+  assert.deepEqual(levels.devices, [{ placeableId: "5003", generatorType: "windtrap", units: 4, cap: 5, percent: 80 }]);
+});
+
+test("generator refill is unsupported when placeables lacks is_hologram", async () => {
+  const calls = [];
+  // Both device queries filter on it, so its absence is a parse error on use.
+  const { db } = fakeRefillDb(calls, {
+    devices: [FUEL_DEVICE],
+    placeableColumns: ["id", "owner_entity_id", "building_type"]
+  });
+
+  assert.equal(await supportsGeneratorRefill(db), false);
+  await assert.rejects(() => refillBaseGenerators(db, "", 482), UnsupportedCapabilityError);
+});
+
+test("a cap override can never push a windtrap past five filters", async () => {
+  await withTempRepoRoot(async (repoRoot) => {
+    mkdirSync(join(repoRoot, "runtime/data"), { recursive: true });
+    writeFileSync(join(repoRoot, "runtime/data/generator-refill-caps.json"),
+      JSON.stringify({ windtrap: { stackSize: 100, maxStacks: 5, totalCap: 500 } }));
+    const { state, db } = fakeRefillDb([], { devices: [WINDTRAP_DEVICE] });
+
+    const levels = await baseGeneratorFuelLevels(db, repoRoot, 482);
+    const result = await refillBaseGenerators(db, repoRoot, 482);
+
+    // The inventory holds 25 volume and a filter is 5: volumeCap wins over
+    // an override that would otherwise allow 500.
+    assert.equal(levels.devices[0].cap, 5);
+    assert.deepEqual(state.inserts.map((entry) => entry.stackSize), [5]);
+    assert.equal(result.devices[0].after, 5);
+  });
 });
 
 test("generator refill is unsupported when the schema has no placeables table", async () => {

@@ -54,6 +54,8 @@ export type AutoRefillBase = {
 export type AutoRefillState = {
   supported: boolean;
   thresholdPercent: number;
+  // Windtraps are scanned with the generators but against their own threshold.
+  windtrapThresholdPercent: number;
   intervalHours: number;
   nextRunAt: string;
   lastRunAt: string;
@@ -63,12 +65,13 @@ export type AutoRefillState = {
   bases: AutoRefillBase[];
 };
 
-// The four tunables shared by both auto-refill scanners. Layered console file
+// The five tunables shared by both auto-refill scanners. Layered console file
 // > env var > hardcoded default, which is why the payload carries more than
 // the values: `sources` says which layer won, and `defaults` is what Reset
 // restores (the env value where one is set, not the hardcoded fallback).
 export type AutoRefillSettingKey =
   | "thresholdPercent"
+  | "windtrapThresholdPercent"
   | "intervalHours"
   | "waterThresholdPercent"
   | "waterIntervalHours";
@@ -144,8 +147,8 @@ export type AutoRefillWaterState = {
 
 // Storage containers plus the refining, crafting, and other inventories
 // (recycler, repair station, the base's own Sub-Fief console) at a base.
-// Generator and windtrap fuel is deliberately absent -- the Power and Water
-// tabs own it.
+// Generator fuel and windtrap filters are deliberately absent -- the Power tab
+// owns them.
 export type BaseInventoryGroupKey = "storage" | "refining" | "crafting" | "other";
 
 export type BaseInventoryGroup = {

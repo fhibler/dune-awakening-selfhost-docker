@@ -472,12 +472,52 @@ test("directory snapshot uses compact database aggregates and local metadata", a
       publicMetadata: {
         modifiers: {},
         modifierGroups: [],
-        progression: { characters: 0, averageLevel: 0, highestLevel: 0 }
+        progression: { characters: 0, averageLevel: 0, highestLevel: 0 },
+        transfers: {
+          incomingPolicy: 0,
+          outgoingAllowed: true,
+          freeFrom: true,
+          freeTo: true,
+          worldClosed: false,
+          worldClosingSoon: false
+        }
       }
     });
     assert.equal(readGameBuild(files.repoRoot), "2036754");
     assert.equal(readConfiguredCapacity(files.repoRoot), 120);
     assert.equal(readConfiguredCapacity(files.repoRoot, 1), 60);
+  } finally {
+    files.cleanup();
+  }
+});
+
+test("directory snapshot publishes only the public character transfer rules", async () => {
+  const files = fixture();
+  try {
+    writeFileSync(join(files.generatedDir, "director-character-transfer.ini"), [
+      "[Battlegroup]",
+      "AcceptOutgoingCharacterTransfers=false",
+      "IncomingCharacterTransfers=20",
+      "FreeToTransferCharactersFrom=true",
+      "FreeToTransferCharactersTo=false",
+      "ForceIsWorldClosed=false",
+      "ForceIsWorldClosingSoon=true",
+      "ExportCharacterTimeout=1234"
+    ].join("\n"));
+    const snapshot = await collectDirectorySnapshot(
+      { repoRoot: files.repoRoot },
+      fakeDb(),
+      readDirectorySettings(files.repoRoot, {})
+    );
+    assert.deepEqual(snapshot.publicMetadata.transfers, {
+      incomingPolicy: 20,
+      outgoingAllowed: false,
+      freeFrom: true,
+      freeTo: false,
+      worldClosed: false,
+      worldClosingSoon: true
+    });
+    assert.equal(JSON.stringify(snapshot.publicMetadata).includes("1234"), false);
   } finally {
     files.cleanup();
   }

@@ -51,6 +51,25 @@ export type RestartQueueResponse = {
   playersOnlineSupported: boolean;
 };
 
+export type RestartHistoryRow = {
+  id: string;
+  startedAt: string;
+  finishedAt: string;
+  durationSeconds: number;
+  scope: "battlegroup" | "map" | "service";
+  target: string;
+  map: string;
+  partitionId: string;
+  source: string;
+  reason: string;
+  result: "Succeeded" | "Failed";
+};
+
+export type RestartHistoryResponse = {
+  rows: RestartHistoryRow[];
+  lastBattlegroupRestart: RestartHistoryRow | null;
+};
+
 export type RestartQueueTarget = { partitionId?: string | number; map?: string };
 
 export type ServerStatusResponse = {
@@ -120,6 +139,7 @@ function immediateQuery(immediate?: boolean) {
 export const serverApi = {
   status: () => api<ServerStatusResponse>("/api/server/status"),
   performance: () => api<PerformanceSnapshot>("/api/server/performance"),
+  restartHistory: () => api<RestartHistoryResponse>("/api/server/restart-history"),
   readiness: () => api<{ stdout: string; stderr?: string; exitCode?: number }>("/api/server/readiness"),
   ports: () => api<{ stdout: string }>("/api/server/ports"),
   services: () => api<{ stdout: string }>("/api/server/services"),

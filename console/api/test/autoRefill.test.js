@@ -76,8 +76,21 @@ function fakeDuneDb({
       calls.push({ fn: "baseGeneratorFuelLevels", baseId });
       const entry = levels[baseId];
       if (entry instanceof Error) throw entry;
-      if (!entry) return { baseId, deviceCount: 0, devices: [], lowestPercent: null };
-      return { baseId, deviceCount: entry.deviceCount ?? 1, devices: [], lowestPercent: entry.lowestPercent };
+      if (!entry) {
+        return { baseId, deviceCount: 0, devices: [], lowestPercent: null, lowestGeneratorPercent: null, lowestWindtrapPercent: null };
+      }
+      // A plain `lowestPercent` fixture is a generator-only base.
+      const generator = entry.lowestGeneratorPercent !== undefined ? entry.lowestGeneratorPercent : entry.lowestPercent;
+      const windtrap = entry.lowestWindtrapPercent ?? null;
+      const present = [generator, windtrap].filter((value) => value != null);
+      return {
+        baseId,
+        deviceCount: entry.deviceCount ?? 1,
+        devices: [],
+        lowestPercent: present.length ? Math.min(...present) : null,
+        lowestGeneratorPercent: generator ?? null,
+        lowestWindtrapPercent: windtrap
+      };
     },
     baseMapLocation: async (_db, baseId) => {
       calls.push({ fn: "baseMapLocation", baseId });
@@ -698,6 +711,54 @@ test("a persisted threshold overrides the env var for the scanner itself", async
     await scheduler.tick();
 
     assert.equal(listQueuedGeneratorRefills(repoRoot).length, 1, "queued against the saved threshold");
+  });
+});
+
+test("windtraps are judged against their own threshold, not the generator one", async () => {
+  await withTempRepoRoot(async (repoRoot) => {
+    const clock = makeClock();
+    for (const baseId of [482, 517, 601, 702]) setBaseAutoRefill(repoRoot, baseId, true, { now: clock.now, env: TEST_ENV });
+    writeAutoRefillState(repoRoot, { ...readAutoRefillState(repoRoot), nextRunAt: new Date(START).toISOString() });
+    const duneDb = fakeDuneDb({
+      levels: {
+        // 2 of 5 filters: under the generator default of 50, but exactly at
+        // the windtrap default of 40, so it must not queue.
+        482: { lowestGeneratorPercent: 90, lowestWindtrapPercent: 40 },
+        // 1 of 5 filters: under 40, so the base is queued.
+        517: { lowestGeneratorPercent: 90, lowestWindtrapPercent: 20 },
+        // Generators low, windtraps full: the generator threshold still applies.
+        601: { lowestGeneratorPercent: 45, lowestWindtrapPercent: 100 },
+        // A windtrap-only base.
+        702: { lowestGeneratorPercent: null, lowestWindtrapPercent: 0 }
+      }
+    });
+    const { scheduler, audits } = makeScheduler(repoRoot, duneDb, clock);
+
+    await scheduler.tick();
+    clock.advance(2000);
+    await scheduler.tick();
+
+    assert.deepEqual(listQueuedGeneratorRefills(repoRoot).map((entry) => entry.baseId).sort((a, b) => a - b), [517, 601, 702]);
+    const queued = audits.find((entry) => entry.action === "bases.auto-refill-queued" && entry.detail.baseId === 517);
+    assert.equal(queued.detail.windtrapThresholdPercent, 40);
+    assert.equal(queued.detail.lowestWindtrapPercent, 20);
+  });
+});
+
+test("a persisted windtrap threshold overrides the default for the scanner", async () => {
+  await withTempRepoRoot(async (repoRoot) => {
+    saveAutoRefillSettings(repoRoot, { windtrapThresholdPercent: 70 });
+    const clock = makeClock();
+    // 60% is healthy against the default 40 but starved against the saved 70.
+    const duneDb = fakeDuneDb({ levels: { 482: { lowestGeneratorPercent: 100, lowestWindtrapPercent: 60 } } });
+    const { scheduler } = makeScheduler(repoRoot, duneDb, clock, {});
+    setBaseAutoRefill(repoRoot, 482, true, { now: clock.now, env: TEST_ENV });
+    await primeScheduler(scheduler, repoRoot, clock);
+    forceDue(repoRoot, clock);
+    await scheduler.tick();
+
+    assert.equal(listQueuedGeneratorRefills(repoRoot).length, 1);
+    assert.equal(autoRefillPublicState(repoRoot, { env: {} }).windtrapThresholdPercent, 70);
   });
 });
 

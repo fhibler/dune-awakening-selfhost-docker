@@ -93,7 +93,10 @@ function startServer(repoRoot) {
 }
 
 async function stopServer(child) {
-  if (!child || child.killed) return;
+  // An API that already exited (e.g. it failed to start) never emits "exit"
+  // again: waiting for it would leave the test pending and the file cancelled,
+  // hiding the startup error `ready` rejected with.
+  if (!child || child.killed || child.exitCode !== null || child.signalCode !== null) return;
   child.kill("SIGTERM");
   await new Promise((resolveExit) => child.once("exit", resolveExit));
 }

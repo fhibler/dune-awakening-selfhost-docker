@@ -4,7 +4,7 @@ import { redact } from "../redact.js";
 import { clampInt, writeJsonAtomic } from "../jsonStore.js";
 
 // Operator-editable tuning for the two auto-refill scanners. Owns only the
-// four numbers; enrollment stays in autoRefill.js / autoRefillWater.js, which
+// five numbers; enrollment stays in autoRefill.js / autoRefillWater.js, which
 // import from here and not the reverse, so there is no cycle.
 //
 // Layered: this file beats the env var, which beats the hardcoded default.
@@ -18,6 +18,11 @@ const AUTO_REFILL_SETTINGS_PATH = "runtime/generated/auto-refill-settings.json";
 export const AUTO_REFILL_SETTING_SPECS = Object.freeze({
   thresholdPercent:      { env: "ADMIN_AUTO_REFILL_THRESHOLD_PERCENT",       fallback: 50, min: 1, max: 99  },
   intervalHours:         { env: "ADMIN_AUTO_REFILL_INTERVAL_HOURS",          fallback: 24, min: 1, max: 168 },
+  // Windtraps ride the generator scan but get their own threshold: they hold
+  // only 5 filters, so levels move in 20% steps and the generator default of
+  // 50 would refill a whole base whenever one windtrap is down to 2 filters.
+  // 40 queues at 1 filter left.
+  windtrapThresholdPercent: { env: "ADMIN_AUTO_REFILL_WINDTRAP_THRESHOLD_PERCENT", fallback: 40, min: 1, max: 99 },
   waterThresholdPercent: { env: "ADMIN_AUTO_REFILL_WATER_THRESHOLD_PERCENT", fallback: 50, min: 1, max: 99  },
   waterIntervalHours:    { env: "ADMIN_AUTO_REFILL_WATER_INTERVAL_HOURS",    fallback: 24, min: 1, max: 168 }
 });

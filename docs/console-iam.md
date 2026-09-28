@@ -95,6 +95,7 @@ Updates that remove the owner's `settings:write` access are rejected so the loca
 | Action | Covers |
 |---|---|
 | `players:moderate` | kick, ban, unban |
+| `players:configure-list` | change the inactive-player visibility threshold |
 | `players:teleport` | teleport |
 | `players:give-item` | give-item(s), give-item-id, augment-item, spawn-vehicle |
 | `players:grant` | currency, XP, intel, faction reputation, faction, skill points/module, building & customization & recipe & research unlocks, specialization XP/grant-max/keystones, journey & tutorial completion |
@@ -116,7 +117,7 @@ Updates that remove the owner's `settings:write` access are rejected so the loca
 
 Add and remove stay one action deliberately: two directions of the same roster knob. Both `DELETE` patterns are anchored regexes rather than prefix rules, because `/api/guilds/{id}` and `/api/guilds/{id}/members/{playerId}` share a prefix and the variable segment comes before the part that distinguishes them — the same reason `bases:delete` needs a real regex.
 
-`bases:mutate` keeps the per-base knobs — refills, permissions, custodian, auto-refill enrollment, queue cancellations — and everything below was carved out of it for consequence or consent. Unlike the namespaces above, `bases:mutate` still exists and is still the bucket most base routes resolve to.
+`bases:mutate` keeps the per-base knobs — refills (generator fuel and, since windtraps joined the generator refill, windtrap filters too), permissions, custodian, auto-refill enrollment, queue cancellations — and everything below was carved out of it for consequence or consent. Unlike the namespaces above, `bases:mutate` still exists and is still the bucket most base routes resolve to.
 
 | Action | Covers |
 |---|---|
@@ -127,8 +128,14 @@ Add and remove stay one action deliberately: two directions of the same roster k
 | `bases:give-item` | give-item, give-items |
 | `bases:fill-item` | fill an existing stack to its cap |
 | `bases:write-config` | the auto-refill thresholds and scan intervals |
+| `bases:export-backup` | download a base backup file: an existing backup, or a live base as a backup |
+| `bases:import-backup` | import a base backup file as a new backup for a player |
+| `bases:edit-backup` | reassign a picked-up base to another player, rename it, or move it to another map |
+| `bases:delete-backup` | permanently delete a picked-up base and everything stored in it |
 
 `bases:write-config` is the consent case rather than the blast-radius one: every other action here acts on one base and is reversible on that base, whereas the thresholds and intervals govern the automation for *every* enrolled base at once. An operator granted `bases:mutate` agreed to enroll bases, not to retune the policy behind all of them. It follows the per-feature settings convention (`exchange:write-config`, `maps:write-config`). Shipped defaults are unchanged: `owner` (`*`) and `admin` (`bases:*`) reach it, and `moderator`/`player`/`observer` keep `bases:read` only, so they can read the settings but not save them.
+
+`bases:import-backup` is a consent action: import creates a whole base (actors, pieces, stored items) for a player, so no `bases:read` or `bases:mutate` grant is read as consent to it; owner (`*`) and admin (`bases:*`) reach it, moderator/player/observer do not. `bases:edit-backup` is split out on the same grounds: reassigning hands a player a whole base. `bases:export-backup` is too: the file carries every item stored in the base and imports as a whole base on any server, so a `bases:read` grant is not consent to it. Listing base backups and the blueprint download stay under `bases:read`.
 
 `blueprints:mutate` and `addons:mutate` were split on the same grounds.
 

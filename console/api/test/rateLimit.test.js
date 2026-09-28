@@ -48,6 +48,22 @@ test("login rate limiter blocks aggregate failures across rotating clients", () 
   assert.equal(limiter.check("client-e").allowed, true);
 });
 
+test("login rate limiter bounds tracked clients without evicting the global counter", () => {
+  const limiter = createLoginRateLimiter({
+    maxAttempts: 1,
+    globalMaxAttempts: 4,
+    maxTrackedKeys: 3,
+    now: () => 1000
+  });
+
+  assert.equal(limiter.recordFailure("client-a").allowed, false);
+  assert.equal(limiter.recordFailure("client-b").allowed, false);
+  assert.equal(limiter.recordFailure("client-c").allowed, false);
+  assert.equal(limiter.check("client-a").allowed, true, "oldest client was not evicted at the cap");
+  assert.equal(limiter.recordFailure("client-d").allowed, false);
+  assert.equal(limiter.check("new-client").allowed, false, "global counter was evicted with a client");
+});
+
 test("mutation rate limiter blocks repeated authenticated writes and resets after the window", () => {
   let currentTime = 1000;
   const limiter = createMutationRateLimiter({
@@ -87,6 +103,21 @@ test("mutation rate limiter applies a global cap across rotating write scopes", 
 
   currentTime += 1001;
   assert.equal(limiter.check("session-a:players.give-item").allowed, true);
+});
+
+test("mutation rate limiter bounds tracked write scopes", () => {
+  const limiter = createMutationRateLimiter({
+    maxRequests: 1,
+    globalMaxRequests: 99,
+    maxTrackedKeys: 3,
+    now: () => 1000
+  });
+
+  limiter.record("scope-a");
+  limiter.record("scope-b");
+  limiter.record("scope-c");
+  assert.equal(limiter.check("scope-a").allowed, true, "oldest write scope was not evicted at the cap");
+  assert.equal(limiter.check("scope-c").allowed, false, "newest write scope was unexpectedly evicted");
 });
 
 test("api key rate limiter grants exactly the configured number of requests", () => {
@@ -139,6 +170,20 @@ test("api key limiter keeps separate budgets per key", () => {
   assert.equal(limiter.record("a", 1).allowed, true);
   assert.equal(limiter.record("a", 1).allowed, false);
   assert.equal(limiter.record("b", 1).allowed, true, "one key exhausting its limit blocked another");
+});
+
+test("api key rate limiter bounds tracked keys", () => {
+  const limiter = createApiKeyRateLimiter({
+    globalMaxRequests: 99,
+    maxTrackedKeys: 3,
+    now: () => 1000
+  });
+
+  limiter.record("key-a", 1);
+  limiter.record("key-b", 1);
+  limiter.record("key-c", 1);
+  assert.equal(limiter.check("key-a", 1).allowed, true, "oldest API key was not evicted at the cap");
+  assert.equal(limiter.check("key-c", 1).allowed, false, "newest API key was unexpectedly evicted");
 });
 
 test("the shared api key ceiling stays above the per-key maximum", async () => {

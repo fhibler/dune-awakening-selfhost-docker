@@ -244,6 +244,7 @@ export function loadConfig() {
     secretsDir,
     apiKeysFile: resolve(secretsDir, "api-keys.json"),
     auditLog: resolve(generatedDir, "web-admin-audit.jsonl"),
+    restartHistoryFile: resolve(generatedDir, "restart-history.jsonl"),
     spicefieldOverridesFile: resolve(generatedDir, "spicefield-overrides.json"),
     // Committed data, not runtime state: Large-spice coordinates are a
     // permanent lookup keyed by Coriolis seed (0-11) -- the same seed

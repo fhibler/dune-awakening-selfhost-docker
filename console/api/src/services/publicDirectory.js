@@ -979,6 +979,15 @@ export function buildHeartbeatPayload(identity, snapshot) {
 
 export async function collectPublicMetadata(repoRoot, db) {
   const modifierMetadata = readPublicModifierMetadata(resolve(repoRoot, "runtime/generated/gameplay-profile.ini"), { repoRoot });
+  const transfer = readCharacterTransferSettings({ repoRoot }).settings;
+  const transfers = {
+    incomingPolicy: transfer.IncomingCharacterTransfers,
+    outgoingAllowed: transfer.AcceptOutgoingCharacterTransfers === true,
+    freeFrom: transfer.FreeToTransferCharactersFrom === true,
+    freeTo: transfer.FreeToTransferCharactersTo === true,
+    worldClosed: transfer.ForceIsWorldClosed === true,
+    worldClosingSoon: transfer.ForceIsWorldClosingSoon === true
+  };
   let progression = { characters: 0, averageLevel: 0, highestLevel: 0 };
   if (db) {
     try {
@@ -995,7 +1004,7 @@ export async function collectPublicMetadata(repoRoot, db) {
       // Public directory reporting must remain healthy if progression is unavailable.
     }
   }
-  return { ...modifierMetadata, progression };
+  return { ...modifierMetadata, progression, transfers };
 }
 
 export function readPublicModifiers(path) {

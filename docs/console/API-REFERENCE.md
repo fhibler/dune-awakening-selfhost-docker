@@ -208,7 +208,9 @@ them.
 
 | Method | Route | Description | Parameters |
 |--------|-------|-------------|------------|
-| GET | `/api/players` | List players (paginated) | `q?`, `page?`, `pageSize?`, `status?` (`all`, `online`, `offline`, or `banned`), `sortColumn?`, `sortDirection?` |
+| GET | `/api/players` | List players (paginated). Set `recentOnly=1` to keep online players and hide offline players beyond the configured inactivity threshold. | `q?`, `page?`, `pageSize?`, `status?` (`all`, `online`, `offline`, or `banned`), `sortColumn?`, `sortDirection?`, `recentOnly?` |
+| GET | `/api/players/list-settings` | Read the Active Players visibility threshold (`null`/Never by default) and whether the current session may change it | None |
+| POST | `/api/players/list-settings` | Change the inactivity threshold; `null` means Never | `inactiveWeeks` (whole number from 1 to 8, or `null`) |
 | GET | `/api/players/online` | List currently online players | `page?`, `pageSize?` |
 | GET | `/api/players/search` | Search players by name/ID | `q` (required, query param) |
 | GET | `/api/players/deleted-characters` | List deleted characters holding bases or vehicles, plus unattributed orphaned assets. See [deleted-characters.md](deleted-characters.md) | None |
@@ -329,13 +331,14 @@ Player rows include `total_playtime_seconds`. The console samples `player_state.
 |--------|-------|-------------|------------|
 | GET | `/api/bases` | List bases (paginated) | `q?`, `page?`, `pageSize?`, `sortColumn?`, `sortDirection?` |
 | GET | `/api/bases/{baseId}/export` | Export base as blueprint | `baseId` |
-| POST | `/api/bases/{baseId}/refill-generators` | Refill all base generators (queued instead if the map isn't safely writable right now) | `baseId` |
+| GET | `/api/bases/{baseId}/export-backup` | Export a live (not picked-up) base as a base backup file, importable with `POST /api/base-backups/import` (`bases:export-backup`; rate limited, audited). Read-only; 409 `no_owner` for an ownerless base, 409 `picked_up` for a picked-up one. See [base-backups.md](base-backups.md#downloading-a-live-base-as-a-base-backup) | `baseId` |
+| POST | `/api/bases/{baseId}/refill-generators` | Refill all base generators and windtrap filters (queued instead if the map isn't safely writable right now). Windtrap filters keep their current tier, capped at 5. Returns "No generators, wind turbines or windtraps were found at this base" if none exist | `baseId` |
 | GET | `/api/bases/pending-refills` | List queued generator refills, grouped by restart target | None |
 | DELETE | `/api/bases/{baseId}/queued-refill` | Cancel a base's queued generator refill | `baseId` |
 | GET | `/api/bases/auto-refill` | Get per-base auto-refill enrollment state | None |
 | POST | `/api/bases/{baseId}/auto-refill` | Enable/disable auto-refill for a base | `baseId`, `enabled` |
 | GET | `/api/bases/auto-refill/settings` | Get the threshold and scan interval for both auto-refill subsystems, with the source (`console`/`env`/`default`), reset value, and range of each | None |
-| POST | `/api/bases/auto-refill/settings` | Save auto-refill thresholds/intervals. A number sets, `null` resets to the env/default layer, an omitted key is unchanged. Rate limited; requires `bases:write-config`, not `bases:mutate` | `thresholdPercent?`, `intervalHours?`, `waterThresholdPercent?`, `waterIntervalHours?` |
+| POST | `/api/bases/auto-refill/settings` | Save auto-refill thresholds/intervals. A number sets, `null` resets to the env/default layer, an omitted key is unchanged. Rate limited; requires `bases:write-config`, not `bases:mutate` | `thresholdPercent?`, `windtrapThresholdPercent?`, `intervalHours?`, `waterThresholdPercent?`, `waterIntervalHours?` |
 | GET | `/api/bases/{baseId}/water` | Get a base's water storage containers (count, volume, fill %; blood volume/fill for Blood Purifiers) | `baseId` |
 | POST | `/api/bases/{baseId}/refill-water` | Refill all base water storage (queued instead if the map isn't safely writable right now). Water only -- blood is never touched | `baseId` |
 | GET | `/api/bases/pending-water-refills` | List queued water refills, grouped by restart target | None |
@@ -357,6 +360,15 @@ Player rows include `total_playtime_seconds`. The console samples `player_state.
 | DELETE | `/api/bases/{baseId}` | Permanently delete a base and everything on it (queued instead if the map isn't safely writable right now); takes a full-database safety backup first. Requires `{ confirmation: "DELETE BASE" }` | `baseId` |
 | GET | `/api/bases/pending-deletes` | List queued base deletes, grouped by restart target | None |
 | DELETE | `/api/bases/{baseId}/queued-delete` | Cancel a base's queued delete | `baseId` |
+| GET | `/api/base-backups` | List the game's base backups (picked-up bases) optionally for one player; includes a `supported` flag, `missing[]` when schema support is incomplete, and `maps[]` (maps a backup can be moved to) | `playerId?` (player pawn id, to list one player's backups); returns 404 if playerId is not a player |
+| GET | `/api/base-backups/{backupId}/export` | Download one base backup as a JSON file (attachment named `<owner>_<backup>_base-backup_<id>.json`; `bases:export-backup`; rate limited, audited) | `backupId`; 400 bad id, 404 unknown backup, 501 unsupported, 504 timeout |
+| PUT | `/api/base-backups/{backupId}` | Reassign a picked-up base to another player, rename it and/or move it to another map (`bases:edit-backup`). The current owner must be offline | JSON `{ ownerPlayerId?, name?, map? }` (`ownerPlayerId` is a player pawn id; `name` 1-23 characters, not starting with `##`; `map` one of the list response's `maps`); 400 invalid_name / invalid_map / no_change, 404 backup or player not found, 409 owner_online or invalid_target, 501 unsupported, 504 timeout |
+| DELETE | `/api/base-backups/{backupId}` | Permanently delete a picked-up base and everything stored in it (`bases:delete-backup`). Takes a full-database safety backup first; the current owner must be offline | JSON `{ confirmation: "DELETE BACKUP" }`; 400 confirmation_required, 404 not_found, 409 owner_online, 501 unsupported (no `dune.base_backup_delete`), 504 timeout |
+| POST | `/api/base-backups/import` | Import a base backup file as a new backup for a player | Multipart form: `player_id` (pawn id), `file`, optional `allow_version_mismatch=1`; 400 invalid_file / invalid player_id / unsupported_version, 404 player not found, 409 version_mismatch or invalid_target (player has no controller), 501 unsupported, 504 timeout |
+
+Base backups are the backups created when a player picks up a base with the
+game's own tool. See [Base backups](base-backups.md#export-and-import) for
+import/export details.
 
 `GET /api/bases` excludes a base that has been picked up via the game's own
 base-backup tool (unclaimed and registered in `dune.base_backup_linked_actors`
@@ -409,8 +421,8 @@ generator refill routes above. See [base-permissions.md](base-permissions.md).
 
 `GET /api/bases/{baseId}/inventory` covers storage containers plus refinery,
 fabricator, and other inventories (recycler, repair station, the base's own
-Sub-Fief console); generator and windtrap fuel belong to the refill and water
-routes above. Its `containers[].items[]` is merged per item template, not per
+Sub-Fief console); generator fuel and windtrap filters belong to the refill route
+above, and stored water belongs to the water route. Its `containers[].items[]` is merged per item template, not per
 slot — `GET /api/bases/{baseId}/containers/{placeableId}` is the per-slot view,
 fetched one container at a time because slots roughly triple the response.
 

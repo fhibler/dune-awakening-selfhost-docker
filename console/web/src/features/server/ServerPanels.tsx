@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { Dispatch, SetStateAction } from "react";
 import { Play, Trash2 } from "lucide-react";
-import { serverApi, type PerformanceSnapshot } from "../../api/server";
+import { serverApi, type PerformanceSnapshot, type RestartHistoryResponse, type RestartHistoryRow } from "../../api/server";
 import { ServerHostnameSetting, useServerHostname } from "./ServerHostnameSetting";
 import { runGatedRestart, serviceRestartTarget, type RestartGate } from "./restartQueueGuard";
 import { setupApi, type Task } from "../../api/setup";
@@ -132,6 +132,7 @@ export function HomePanel({ status, readiness, taskResult, setTaskResult, funcom
   const [readinessWarning, setReadinessWarning] = useState("");
   const [performance, setPerformance] = useState<PerformanceSnapshot | null>(null);
   const [performanceError, setPerformanceError] = useState("");
+  const [restartHistory, setRestartHistory] = useState<RestartHistoryResponse | null>(null);
   const [hasLoaded, setHasLoaded] = useState(Boolean(status || readiness));
   const homeActionRunId = useRef(0);
   const homeActionStartedAt = useRef(0);
@@ -272,6 +273,14 @@ export function HomePanel({ status, readiness, taskResult, setTaskResult, funcom
 
   useEffect(() => {
     let active = true;
+    Promise.resolve().then(() => serverApi.restartHistory()).then((result) => {
+      if (active) setRestartHistory(result);
+    }).catch(() => null);
+    return () => { active = false; };
+  }, [taskResult?.status, taskResult?.title]);
+
+  useEffect(() => {
+    let active = true;
     async function checkRecentFuncomAuthLogs() {
       const authCheck = await serverApi.checkFuncomToken("10m").catch(() => null);
       if (!active || !authCheck) return;
@@ -394,6 +403,7 @@ export function HomePanel({ status, readiness, taskResult, setTaskResult, funcom
       <article className="hero-panel">
         <h2>Server Overview</h2>
         <p>Use this dashboard for setup, service health, logs, backups, updates, and player admin actions.</p>
+        <p className="home-last-restart"><span>Last Battlegroup Restart</span><strong>{restartHistory?.lastBattlegroupRestart ? formatRestartTime(restartHistory.lastBattlegroupRestart.finishedAt) : "Not Recorded Yet"}</strong></p>
         <div className="action-row">
           <button className={loading ? "refresh-status-button refreshing" : "refresh-status-button"} disabled={refreshDisabled} onClick={() => refresh()}>{loading ? <span className="loading-dots">Refreshing</span> : "Refresh Status"}</button>
           <button disabled={startDisabled} title={controlsState.running ? "Battlegroup is already running." : ""} onClick={() => runServerAction("start")}><Play size={16} /> Start</button>
@@ -1034,6 +1044,7 @@ export function ServerPanel(props: {
           <strong className={serviceRestartResult.status === "running" ? "loading-dots" : ""}>{formatResultTitle(serviceRestartResult.title, serviceRestartResult.status === "running")}</strong>
         </span>}
       </div>
+      <RestartHistoryPanel refreshKey={`${taskResult?.status || ""}:${serviceRestartResult?.status || ""}`} />
       <ReadinessTimeline text={props.readiness} statusText={props.status} />
       <PortChecklist text={props.ports} statusText={props.status} />
       <section className="action-section">
@@ -1063,6 +1074,64 @@ export function ServerPanel(props: {
       {storageCleanupResult && <HomeTaskResultCard result={storageCleanupResult} />}
     </section>
   );
+}
+
+function RestartHistoryPanel({ refreshKey }: { refreshKey: string }) {
+  const [history, setHistory] = useState<RestartHistoryResponse | null>(null);
+  const [filter, setFilter] = useState<"all" | RestartHistoryRow["scope"]>("all");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  async function load() {
+    setLoading(true);
+    setError("");
+    try { setHistory(await serverApi.restartHistory()); }
+    catch (loadError) { setError(loadError instanceof Error ? loadError.message : String(loadError)); }
+    finally { setLoading(false); }
+  }
+
+  useEffect(() => { void load(); }, [refreshKey]);
+  const rows = (history?.rows || []).filter((row) => filter === "all" || row.scope === filter);
+
+  return <details className="restart-history-panel">
+    <summary><span><strong>Restart History</strong><small>{history?.lastBattlegroupRestart ? `Last Battlegroup restart ${formatRestartTime(history.lastBattlegroupRestart.finishedAt)}` : "Tracking begins after this update"}</small></span></summary>
+    <div className="restart-history-toolbar">
+      <label>Show<select value={filter} onChange={(event) => setFilter(event.target.value as typeof filter)}>
+        <option value="all">All Restarts</option>
+        <option value="battlegroup">Battlegroup</option>
+        <option value="map">Maps</option>
+        <option value="service">Services</option>
+      </select></label>
+      <button className="secondary" disabled={loading} onClick={() => void load()}>{loading ? "Refreshing" : "Refresh"}</button>
+    </div>
+    {error && <p className="error">{error}</p>}
+    {!error && !rows.length && <p className="muted">No matching restarts have been recorded yet.</p>}
+    {rows.length > 0 && <div className="restart-history-table-wrap"><table className="restart-history-table">
+      <thead><tr><th>Completed</th><th>Target</th><th>Source</th><th>Reason</th><th>Duration</th><th>Result</th></tr></thead>
+      <tbody>{rows.map((row) => <tr key={row.id}>
+        <td data-label="Completed">{formatRestartTime(row.finishedAt)}</td>
+        <td data-label="Target">{row.target}</td>
+        <td data-label="Source">{row.source}</td>
+        <td data-label="Reason">{row.reason}</td>
+        <td data-label="Duration">{formatRestartDuration(row.durationSeconds)}</td>
+        <td data-label="Result"><StatusPill value={row.result} /></td>
+      </tr>)}</tbody>
+    </table></div>}
+  </details>;
+}
+
+function formatRestartTime(value: string) {
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return "Unknown";
+  return new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(date);
+}
+
+function formatRestartDuration(seconds: number) {
+  const value = Math.max(0, Math.round(seconds || 0));
+  if (value < 60) return `${value}s`;
+  const minutes = Math.floor(value / 60);
+  const remainder = value % 60;
+  return remainder ? `${minutes}m ${remainder}s` : `${minutes}m`;
 }
 
 async function waitForTask(task: Task, setTask: (task: Task) => void) {

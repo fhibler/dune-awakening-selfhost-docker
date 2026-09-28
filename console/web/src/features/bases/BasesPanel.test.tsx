@@ -135,7 +135,16 @@ describe("BasesPanel player scope", () => {
     expect(screen.queryByPlaceholderText("Search ID, name, type, or owner")).not.toBeInTheDocument();
     expect(document.querySelector(".player-bases-panel .bases-table")).toBeInTheDocument();
     expect(screen.getByText("Owned Home").closest("td")).toHaveAttribute("data-label", "Base Name");
-    expect(screen.getAllByRole("button", { name: /Download Base as Blueprint/ })[0].closest("td")).toHaveAttribute("data-label", "Actions");
+    const download = screen.getAllByRole("button", { name: "Download Base" })[0];
+    expect(download.closest("td")).toHaveAttribute("data-label", "Actions");
+    // Opens the format choice for that base rather than downloading.
+    fireEvent.click(download);
+    const dialog = screen.getByRole("dialog", { name: "Download Base" });
+    expect(dialog).toHaveTextContent("Owned Home");
+    expect(within(dialog).getByRole("button", { name: /Download Blueprint/ })).toBeEnabled();
+    expect(within(dialog).getByRole("button", { name: /Download Base Backup/ })).toBeEnabled();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("dialog", { name: "Download Base" })).not.toBeInTheDocument();
   });
 });
 
@@ -285,6 +294,42 @@ describe("BasesPanel generator details", () => {
     expect(screen.getByText("1 of 1")).toBeInTheDocument();
   });
 
+  it("shows windtraps in the Power tab with filter wording", async () => {
+    vi.mocked(basesApi.list).mockResolvedValue({
+      capabilities: { bases: true },
+      totalCount: 1,
+      totalBases: 1,
+      totalPieces: 10,
+      totalPlaceables: 3,
+      rows: [
+        {
+          ...commonRow,
+          base_id: "1010",
+          name: "Sietch Traps",
+          generatorDataAvailable: true,
+          generatorCount: 1,
+          windtrapCount: 2,
+          generatorRuntimeSeconds: 3600,
+          generatorUnstockedCount: 1,
+          generatorAllUnstocked: false,
+          generators: [
+            { type: "fuel", name: "Fuel-Powered Generator", fuelName: "Fuel Cell", fuelCells: 1, generatorCount: 1, runtimeSeconds: 3600, unstockedCount: 0 },
+            { type: "windtrap", name: "Windtrap", fuelName: "Filter", fuelCells: 0, generatorCount: 1, runtimeSeconds: 0, unstockedCount: 1 },
+            { type: "largeWindtrap", name: "Large Windtrap", fuelName: "Filter", fuelCells: 4, generatorCount: 1, runtimeSeconds: 345600, unstockedCount: 0 }
+          ]
+        }
+      ]
+    });
+
+    renderPanel();
+    fireEvent.click(await screen.findByRole("button", { name: "Show details for Sietch Traps" }));
+
+    const card = (title: string) => screen.getByText(title, { selector: ".bases-card-title" }).closest(".bases-card");
+    expect(card("Windtrap")?.textContent).toContain("Windtraps1Filters Queued0 FiltersNo Queued Filters1 of 1");
+    expect(card("Large Windtrap")?.textContent).toContain("Windtraps1Filters Queued4 Filters");
+    expect(card("Fuel-Powered Generator")?.textContent).toContain("Generators1Fuel Queued1 Fuel Cell");
+  });
+
   it("reports when every generator has no queued fuel without claiming active burns stopped", async () => {
     vi.mocked(basesApi.list).mockResolvedValue({
       capabilities: { bases: true },
@@ -419,6 +464,53 @@ describe("BasesPanel generator refill", () => {
     fireEvent.click(await awaitFreshRows("Sietch Full"));
 
     expect(await screen.findByText("All 1 device was already full. Nothing added.")).toBeInTheDocument();
+  });
+
+  it("refills a windtrap-only base without counting its windtraps as generators", async () => {
+    vi.mocked(basesApi.list).mockResolvedValue(listResponse({ bases: true, generatorRefill: true }, {
+      base_id: "2006",
+      name: "Sietch Windtraps",
+      generatorDataAvailable: true,
+      // The backend keeps windtraps out of the generator totals.
+      generatorCount: 0,
+      windtrapCount: 2,
+      generatorRuntimeSeconds: 0,
+      generators: [
+        { type: "windtrap", name: "Windtrap", fuelName: "Filter", fuelCells: 3, generatorCount: 2, runtimeSeconds: 28800, unstockedCount: 1 }
+      ]
+    }));
+
+    vi.mocked(basesApi.refillGenerators).mockResolvedValue({
+      supported: true,
+      result: {
+        ok: true,
+        baseId: 2006,
+        totalAdded: 3,
+        devices: [
+          { placeableId: "93001", type: "windtrap", label: "Windtrap", fuelName: "Standard Filter", before: 2, after: 5, added: 3, capped: false },
+          { placeableId: "93002", type: "windtrap", label: "Windtrap", fuelName: "Standard Filter", before: 5, after: 5, added: 0, capped: false }
+        ]
+      }
+    });
+
+    const props = renderPanel();
+    const refill = await awaitFreshRows("Sietch Windtraps");
+    // The accessible name stays "Refill Generators"; the tooltip says what it does here.
+    expect(refill).toHaveAttribute("title", "Refill Windtrap Filters");
+    // The Generators column has nothing to report, but the filters still refill.
+    const row = screen.getByText("Sietch Windtraps").closest("tr");
+    expect(row?.querySelector(".bases-generator-summary")).toBeNull();
+    expect(refill).toBeEnabled();
+
+    fireEvent.click(refill);
+
+    await waitFor(() => expect(props.confirmAction).toHaveBeenCalledWith(
+      'Refill 2 power devices at "Sietch Windtraps" to full fuel and filters?',
+      expect.objectContaining({ title: "Refill Generators" })
+    ));
+    // Only filters were added, so the summary must not claim fuel.
+    expect(await screen.findByText(/Added 3 filter units across 1 device\./)).toBeInTheDocument();
+    expect(screen.getByText(/Windtrap: \+3 Standard Filters/)).toBeInTheDocument();
   });
 
   it("disables refill when the database cannot support it or the base has no generators", async () => {
@@ -677,6 +769,7 @@ describe("BasesPanel auto-refill", () => {
     return {
       supported: true,
       thresholdPercent: 50,
+      windtrapThresholdPercent: 40,
       intervalHours: 24,
       nextRunAt: "2026-07-31T12:00:00.000Z",
       lastRunAt: "",
@@ -688,12 +781,12 @@ describe("BasesPanel auto-refill", () => {
   }
 
   function autoRefillSettingsState() {
-    const keys = ["thresholdPercent", "intervalHours", "waterThresholdPercent", "waterIntervalHours"] as const;
+    const keys = ["thresholdPercent", "windtrapThresholdPercent", "intervalHours", "waterThresholdPercent", "waterIntervalHours"] as const;
     const byKey = <T,>(value: T) => Object.fromEntries(keys.map((key) => [key, value])) as Record<typeof keys[number], T>;
     return {
-      settings: { thresholdPercent: 50, intervalHours: 24, waterThresholdPercent: 50, waterIntervalHours: 24 },
+      settings: { thresholdPercent: 50, windtrapThresholdPercent: 40, intervalHours: 24, waterThresholdPercent: 50, waterIntervalHours: 24 },
       sources: byKey("default" as const),
-      defaults: { thresholdPercent: 50, intervalHours: 24, waterThresholdPercent: 50, waterIntervalHours: 24 },
+      defaults: { thresholdPercent: 50, windtrapThresholdPercent: 40, intervalHours: 24, waterThresholdPercent: 50, waterIntervalHours: 24 },
       limits: byKey({ min: 1, max: 168 }),
       envNames: byKey("ADMIN_AUTO_REFILL_THRESHOLD_PERCENT")
     };
@@ -764,7 +857,7 @@ describe("BasesPanel auto-refill", () => {
     // The rule explanation lives in an InfoTooltip (the same component Maps
     // uses for Host Memory Protection etc.), not as visible text -- the row's
     // grid column can be as narrow as 240px.
-    expect(screen.getByRole("tooltip")).toHaveTextContent("Checked every 24h. Queues a refill when any generator drops below 50%.");
+    expect(screen.getByRole("tooltip")).toHaveTextContent("Checked every 24h. Queues a refill when any generator drops below 50% or any windtrap below 40%.");
 
     const listCallsBefore = vi.mocked(basesApi.list).mock.calls.length;
     fireEvent.click(screen.getByText("Auto-Refill"));
@@ -1581,7 +1674,7 @@ describe("BasesPanel combined fuel/water queue and stalled banners", () => {
   beforeEach(() => {
     vi.mocked(basesApi.pendingRefills).mockResolvedValue({ supported: true, total: 0, pending: [], byTarget: [] });
     vi.mocked(basesApi.autoRefill).mockResolvedValue({
-      supported: true, thresholdPercent: 50, intervalHours: 24, nextRunAt: "", lastRunAt: "", lastRunStatus: "", lastRunDetail: "", total: 0, bases: []
+      supported: true, thresholdPercent: 50, windtrapThresholdPercent: 40, intervalHours: 24, nextRunAt: "", lastRunAt: "", lastRunStatus: "", lastRunDetail: "", total: 0, bases: []
     });
   });
 

@@ -254,3 +254,11 @@ test("a blank env var reads as unset rather than clamping to the minimum", async
     }
   });
 });
+
+test("the windtrap threshold defaults to 40 and has its own env var", () => {
+  assert.deepEqual(AUTO_REFILL_SETTING_SPECS.windtrapThresholdPercent,
+    { env: "ADMIN_AUTO_REFILL_WINDTRAP_THRESHOLD_PERCENT", fallback: 40, min: 1, max: 99 });
+  assert.equal(resolveAutoRefillSetting("windtrapThresholdPercent", { env: {} }), 40);
+  assert.equal(resolveAutoRefillSetting("windtrapThresholdPercent",
+    { env: { ADMIN_AUTO_REFILL_WINDTRAP_THRESHOLD_PERCENT: "20" } }), 20);
+});

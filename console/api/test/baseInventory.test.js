@@ -187,7 +187,8 @@ test("baseInventory only ever asks for allowlisted building types", async () => 
   assert.ok(buildingTypes.includes("repairstation_placeable"));
   assert.ok(buildingTypes.includes("totem_small_placeable"));
   assert.ok(buildingTypes.includes("totem_placeable"));
-  // The Power and Water tabs own these; an unrecognised placeable must not
+  // The Power tab owns generator fuel and windtrap filters, the Water tab
+  // cisterns and stored water; an unrecognised placeable must not
   // acquire a group by accident either.
   assert.ok(!buildingTypes.includes("generator_placeable"));
   assert.ok(!buildingTypes.includes("windtrap_placeable"));

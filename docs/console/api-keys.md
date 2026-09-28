@@ -96,8 +96,8 @@ namespace" rule, so Create stays disabled until something is selected.
 
 | Namespace | Read grants | Read+write additionally grants |
 |---|---|---|
-| `players` | `players:read` | `delete-item`, `edit-item`, `give-item`, `grant`, `kick-all`, `moderate`, `recover`, `repair`, `reset`, `teleport`, `unclassified` |
-| `bases` | `bases:read` | `add-item`, `bulk-delete-items`, `delete`, `delete-item`, `fill-item`, `give-item`, `mutate`, `write-config` |
+| `players` | `players:read` | `configure-list`, `delete-item`, `edit-item`, `give-item`, `grant`, `kick-all`, `moderate`, `recover`, `repair`, `reset`, `teleport`, `unclassified` |
+| `bases` | `bases:read` | `add-item`, `bulk-delete-items`, `delete`, `delete-item`, `fill-item`, `give-item`, `delete-backup`, `edit-backup`, `export-backup`, `import-backup`, `mutate`, `write-config` — **the four base-backup actions require explicit grants; see below** |
 | `vehicles` | `vehicles:read` | `bulk-delete-items`, `delete`, `delete-item`, `mutate` |
 | `guilds` | `guilds:read` | `disband`, `membership`, `rank`, `unclassified` |
 | `storage` | `storage:read` | `mutate` |
@@ -139,11 +139,11 @@ runs a grant cycle. The verb-shaped name is not the test; what the route does is
 
 ### The two system-backup scopes
 
-### Three actions no level ever grants
+### Actions no level ever grants
 
-`backups:download-system`, `backups:import-system` and `backups:restore-system` are
-reachable **only** by naming them in a key's explicit action list. A key stored as
-`{"backups": "write"}` does not get them.
+`backups:download-system`, `backups:import-system`, `backups:restore-system`,
+`bases:import-backup`, `bases:edit-backup`, `bases:export-backup` and `bases:delete-backup` are reachable **only** by naming them in a
+key's explicit action list. A key stored as `{"backups": "write"}` or `{"bases": "write"}` does not get them.
 
 Levels otherwise auto-cover actions added later, so a key keeps working as routes are
 added. That is right for a namespace whose blast radius is stable, and wrong for this
@@ -157,7 +157,15 @@ nothing for the operator to review.
 `create-system` and `delete-system` are not excluded: neither reads an archive back nor
 writes one into the host.
 
-The `admin` tier is denied the same three for the same reason — see `policy.js`.
+`bases:import-backup`, `bases:edit-backup`, `bases:export-backup` and `bases:delete-backup` are excluded on the
+same grounds. Import creates a whole base, with every item stored in it, from an uploaded
+file. Edit can hand an existing picked-up base to another player or move it to another map.
+Export downloads a whole base, every stored item included, as a file that imports on any
+server. Delete permanently removes that backup and all of its stored contents. A `bases: write` key was minted for per-base
+knobs (refills, permissions), not for that.
+
+The `admin` tier is denied the three `backups` actions above for the same reason — see
+`policy.js`. It keeps the four `bases` actions through `bases:*`.
 
 `backups:create-system` and `backups:download-system` are write-classified and
 deliberately separate from the rest of the namespace, because neither is really about

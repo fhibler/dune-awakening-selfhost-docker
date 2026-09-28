@@ -71,10 +71,18 @@ Run the installer from a regular user account with `sudo` access, not while logg
 Copy and paste this command on a fresh Linux server:
 
 ```sh
-sh -c 'set -eu; echo "==> Setting up Dune Docker Console..."; if command -v curl >/dev/null 2>&1; then _download() { curl -fsSL "$1"; }; _download_progress() { curl -fSL "$1"; }; _download_effective_url() { curl -fsSLI -o /dev/null -w "%{url_effective}" "$1"; }; elif command -v wget >/dev/null 2>&1; then _download() { wget -qO- "$1"; }; _download_progress() { wget -O- "$1"; }; _download_effective_url() { wget -qS --spider "$1" 2>&1 | grep -i "^ *Location:" | tail -1 | awk "{print \$2}"; }; else echo "==> Neither curl nor wget found. Installing prerequisites..."; if command -v apt-get >/dev/null 2>&1; then sudo apt-get update && sudo apt-get install -y ca-certificates curl tar; elif command -v dnf >/dev/null 2>&1; then sudo dnf install -y curl tar; elif command -v yum >/dev/null 2>&1; then sudo yum install -y curl tar; elif command -v zypper >/dev/null 2>&1; then sudo zypper install -y curl tar; elif command -v pacman >/dev/null 2>&1; then sudo pacman -Sy --noconfirm curl tar; elif command -v apk >/dev/null 2>&1; then sudo apk add --no-cache curl tar; elif command -v xbps-install >/dev/null 2>&1; then sudo xbps-install -Sy curl tar; else echo "Could not detect package manager. Please install curl or wget manually." >&2; exit 1; fi; _download() { curl -fsSL "$1"; }; _download_progress() { curl -fSL "$1"; }; _download_effective_url() { curl -fsSLI -o /dev/null -w "%{url_effective}" "$1"; }; fi; mkdir -p "$HOME/dune-awakening-selfhost-docker"; cd "$HOME/dune-awakening-selfhost-docker"; echo "==> Finding the latest release..."; latest_url="$(_download_effective_url https://github.com/Red-Blink/dune-awakening-selfhost-docker/releases/latest)"; version="${latest_url##*/}"; echo "==> Downloading dune-awakening-selfhost-docker ${version}..."; _download_progress "https://github.com/Red-Blink/dune-awakening-selfhost-docker/archive/refs/tags/${version}.tar.gz" | tar -xz --strip-components=1; chmod +x install.sh; echo "==> Starting the installer..."; ./install.sh'
+curl -fsSL https://raw.githubusercontent.com/Red-Blink/dune-awakening-selfhost-docker/main/bootstrap.sh | sh
 ```
 
 The installer downloads the latest release, starts the Web UI, and tells you which address to open. Complete the remaining setup in your browser.
+
+The default installation path is `~/dune-awakening-selfhost-docker`. To use a different Linux disk, set the complete destination explicitly:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Red-Blink/dune-awakening-selfhost-docker/main/bootstrap.sh | DUNE_INSTALL_DIR=/mnt/dune/dune-awakening-selfhost-docker sh
+```
+
+On Windows, run the command in the supported Linux VM or Ubuntu WSL2 terminal—not PowerShell, Command Prompt, or Docker Desktop's internal shell. The bootstrap checks that the destination is writable and has space before it extracts anything; failed downloads never leave a partially overwritten installation.
 
 On Alpine Linux, the installer uses the distribution's Docker and Docker Compose packages and starts Docker through OpenRC. If the community repository is unavailable, the installer asks before changing repository configuration.
 

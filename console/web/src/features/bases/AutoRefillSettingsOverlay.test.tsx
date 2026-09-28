@@ -10,17 +10,19 @@ vi.mock("../../api/bases", () => ({
 
 function settingsState(overrides: Record<string, unknown> = {}) {
   return {
-    settings: { thresholdPercent: 50, intervalHours: 24, waterThresholdPercent: 50, waterIntervalHours: 24 },
-    sources: { thresholdPercent: "default", intervalHours: "default", waterThresholdPercent: "default", waterIntervalHours: "default" },
-    defaults: { thresholdPercent: 50, intervalHours: 24, waterThresholdPercent: 50, waterIntervalHours: 24 },
+    settings: { thresholdPercent: 50, windtrapThresholdPercent: 40, intervalHours: 24, waterThresholdPercent: 50, waterIntervalHours: 24 },
+    sources: { thresholdPercent: "default", windtrapThresholdPercent: "default", intervalHours: "default", waterThresholdPercent: "default", waterIntervalHours: "default" },
+    defaults: { thresholdPercent: 50, windtrapThresholdPercent: 40, intervalHours: 24, waterThresholdPercent: 50, waterIntervalHours: 24 },
     limits: {
       thresholdPercent: { min: 1, max: 99 },
+      windtrapThresholdPercent: { min: 1, max: 99 },
       intervalHours: { min: 1, max: 168 },
       waterThresholdPercent: { min: 1, max: 99 },
       waterIntervalHours: { min: 1, max: 168 }
     },
     envNames: {
       thresholdPercent: "ADMIN_AUTO_REFILL_THRESHOLD_PERCENT",
+      windtrapThresholdPercent: "ADMIN_AUTO_REFILL_WINDTRAP_THRESHOLD_PERCENT",
       intervalHours: "ADMIN_AUTO_REFILL_INTERVAL_HOURS",
       waterThresholdPercent: "ADMIN_AUTO_REFILL_WATER_THRESHOLD_PERCENT",
       waterIntervalHours: "ADMIN_AUTO_REFILL_WATER_INTERVAL_HOURS"
@@ -52,20 +54,21 @@ describe("AutoRefillSettingsOverlay", () => {
 
   it("loads both subsystems' current values", async () => {
     renderOverlay();
-    await waitFor(() => expect(fields()).toHaveLength(4));
-    expect(screen.getByText("Generators")).toBeInTheDocument();
+    await waitFor(() => expect(fields()).toHaveLength(5));
+    expect(screen.getByText("Generators & Windtraps")).toBeInTheDocument();
     expect(screen.getByText("Water")).toBeInTheDocument();
-    expect(fields().map((input) => (input as HTMLInputElement).value)).toEqual(["50", "24", "50", "24"]);
+    expect(fields().map((input) => (input as HTMLInputElement).value)).toEqual(["50", "40", "24", "50", "24"]);
   });
 
   it("sends only edited fields as numbers and leaves the rest reset", async () => {
     const props = renderOverlay();
-    await waitFor(() => expect(fields()).toHaveLength(4));
+    await waitFor(() => expect(fields()).toHaveLength(5));
     fireEvent.change(generatorThreshold(), { target: { value: "40" } });
     fireEvent.click(screen.getByText("Save"));
 
     await waitFor(() => expect(vi.mocked(basesApi.saveAutoRefillSettings)).toHaveBeenCalledWith({
       thresholdPercent: 40,
+      windtrapThresholdPercent: null,
       intervalHours: null,
       waterThresholdPercent: null,
       waterIntervalHours: null
@@ -79,8 +82,8 @@ describe("AutoRefillSettingsOverlay", () => {
   // to ADMIN_AUTO_REFILL_* would silently stop taking effect.
   it("sends null, not the number, when a field is reset", async () => {
     vi.mocked(basesApi.autoRefillSettings).mockResolvedValue(settingsState({
-      settings: { thresholdPercent: 40, intervalHours: 24, waterThresholdPercent: 50, waterIntervalHours: 24 },
-      sources: { thresholdPercent: "console", intervalHours: "default", waterThresholdPercent: "default", waterIntervalHours: "default" }
+      settings: { thresholdPercent: 40, windtrapThresholdPercent: 40, intervalHours: 24, waterThresholdPercent: 50, waterIntervalHours: 24 },
+      sources: { thresholdPercent: "console", windtrapThresholdPercent: "default", intervalHours: "default", waterThresholdPercent: "default", waterIntervalHours: "default" }
     }) as never);
     renderOverlay();
     await waitFor(() => expect(generatorThreshold()).toHaveValue(40));
@@ -96,8 +99,8 @@ describe("AutoRefillSettingsOverlay", () => {
 
   it("keeps a console-set value as a number when another field is reset", async () => {
     vi.mocked(basesApi.autoRefillSettings).mockResolvedValue(settingsState({
-      settings: { thresholdPercent: 40, intervalHours: 6, waterThresholdPercent: 50, waterIntervalHours: 24 },
-      sources: { thresholdPercent: "console", intervalHours: "console", waterThresholdPercent: "default", waterIntervalHours: "default" }
+      settings: { thresholdPercent: 40, windtrapThresholdPercent: 40, intervalHours: 6, waterThresholdPercent: 50, waterIntervalHours: 24 },
+      sources: { thresholdPercent: "console", windtrapThresholdPercent: "default", intervalHours: "console", waterThresholdPercent: "default", waterIntervalHours: "default" }
     }) as never);
     renderOverlay();
     await waitFor(() => expect(generatorThreshold()).toHaveValue(40));
@@ -110,9 +113,22 @@ describe("AutoRefillSettingsOverlay", () => {
     ));
   });
 
+  it("saves the windtrap threshold as its own setting", async () => {
+    renderOverlay();
+    await waitFor(() => expect(fields()).toHaveLength(5));
+    const windtrap = screen.getByLabelText("Generators: Windtraps: queue a refill below (%)");
+    expect(windtrap).toHaveValue(40);
+    fireEvent.change(windtrap, { target: { value: "20" } });
+    fireEvent.click(screen.getByText("Save"));
+
+    await waitFor(() => expect(vi.mocked(basesApi.saveAutoRefillSettings)).toHaveBeenCalledWith(
+      expect.objectContaining({ windtrapThresholdPercent: 20, thresholdPercent: null })
+    ));
+  });
+
   it("Reset is disabled for a field that is not overridden", async () => {
     renderOverlay();
-    await waitFor(() => expect(fields()).toHaveLength(4));
+    await waitFor(() => expect(fields()).toHaveLength(5));
     expect(resetGeneratorThreshold()).toBeDisabled();
     fireEvent.change(generatorThreshold(), { target: { value: "40" } });
     expect(resetGeneratorThreshold()).toBeEnabled();
@@ -120,7 +136,7 @@ describe("AutoRefillSettingsOverlay", () => {
 
   it("blocks saving an out-of-range or non-numeric value", async () => {
     renderOverlay();
-    await waitFor(() => expect(fields()).toHaveLength(4));
+    await waitFor(() => expect(fields()).toHaveLength(5));
 
     for (const bad of ["0", "100", ""]) {
       fireEvent.change(generatorThreshold(), { target: { value: bad } });
@@ -136,7 +152,7 @@ describe("AutoRefillSettingsOverlay", () => {
 
   it("uses each field's own range", async () => {
     renderOverlay();
-    await waitFor(() => expect(fields()).toHaveLength(4));
+    await waitFor(() => expect(fields()).toHaveLength(5));
     // 100 is out of range for a percentage but fine for an interval.
     fireEvent.change(generatorInterval(), { target: { value: "100" } });
     expect(screen.queryByText(/Must be a whole number, 1-168\./)).not.toBeInTheDocument();
@@ -145,9 +161,9 @@ describe("AutoRefillSettingsOverlay", () => {
 
   it("names the env var when a value comes from the environment", async () => {
     vi.mocked(basesApi.autoRefillSettings).mockResolvedValue(settingsState({
-      settings: { thresholdPercent: 50, intervalHours: 12, waterThresholdPercent: 50, waterIntervalHours: 24 },
-      sources: { thresholdPercent: "default", intervalHours: "env", waterThresholdPercent: "default", waterIntervalHours: "default" },
-      defaults: { thresholdPercent: 50, intervalHours: 12, waterThresholdPercent: 50, waterIntervalHours: 24 }
+      settings: { thresholdPercent: 50, windtrapThresholdPercent: 40, intervalHours: 12, waterThresholdPercent: 50, waterIntervalHours: 24 },
+      sources: { thresholdPercent: "default", windtrapThresholdPercent: "default", intervalHours: "env", waterThresholdPercent: "default", waterIntervalHours: "default" },
+      defaults: { thresholdPercent: 50, windtrapThresholdPercent: 40, intervalHours: 12, waterThresholdPercent: 50, waterIntervalHours: 24 }
     }) as never);
     renderOverlay();
     await waitFor(() => expect(screen.getByText(/ADMIN_AUTO_REFILL_INTERVAL_HOURS \(12\)/)).toBeInTheDocument());
@@ -160,7 +176,7 @@ describe("AutoRefillSettingsOverlay", () => {
   // while every non-StrictMode test passed.
   it("finishes loading when mounted under StrictMode", async () => {
     render(<StrictMode><AutoRefillSettingsOverlay onClose={() => {}} onSaved={() => {}} onError={() => {}} /></StrictMode>);
-    await waitFor(() => expect(screen.getAllByRole("spinbutton")).toHaveLength(4));
+    await waitFor(() => expect(screen.getAllByRole("spinbutton")).toHaveLength(5));
     expect(screen.queryByText("Loading…")).not.toBeInTheDocument();
   });
 
@@ -169,7 +185,7 @@ describe("AutoRefillSettingsOverlay", () => {
   it("shows a save failure inside the dialog, not only via onError", async () => {
     vi.mocked(basesApi.saveAutoRefillSettings).mockRejectedValue(new Error("Too many requests."));
     renderOverlay();
-    await waitFor(() => expect(fields()).toHaveLength(4));
+    await waitFor(() => expect(fields()).toHaveLength(5));
     fireEvent.change(generatorThreshold(), { target: { value: "40" } });
     fireEvent.click(screen.getByText("Save"));
 
@@ -187,7 +203,7 @@ describe("AutoRefillSettingsOverlay", () => {
     const retry = within(dialog).getByText("Try again");
 
     fireEvent.click(retry);
-    await waitFor(() => expect(fields()).toHaveLength(4));
+    await waitFor(() => expect(fields()).toHaveLength(5));
     expect(within(dialog).queryByText("Settings could not be read.")).not.toBeInTheDocument();
   });
 
@@ -196,7 +212,7 @@ describe("AutoRefillSettingsOverlay", () => {
   it("surfaces a save failure and keeps the overlay open", async () => {
     vi.mocked(basesApi.saveAutoRefillSettings).mockRejectedValue(new Error("Too many requests."));
     const props = renderOverlay();
-    await waitFor(() => expect(fields()).toHaveLength(4));
+    await waitFor(() => expect(fields()).toHaveLength(5));
     fireEvent.change(generatorThreshold(), { target: { value: "40" } });
     fireEvent.click(screen.getByText("Save"));
 
@@ -213,7 +229,7 @@ describe("AutoRefillSettingsOverlay", () => {
 
   it("closes on Escape and on the close button", async () => {
     const props = renderOverlay();
-    await waitFor(() => expect(fields()).toHaveLength(4));
+    await waitFor(() => expect(fields()).toHaveLength(5));
     fireEvent.keyDown(window, { key: "Escape" });
     expect(props.onClose).toHaveBeenCalledTimes(1);
     fireEvent.click(screen.getByLabelText("Close"));
@@ -234,7 +250,7 @@ describe("AutoRefillSettingsOverlay", () => {
       );
     }
     render(<Harness />);
-    await waitFor(() => expect(fields()).toHaveLength(4));
+    await waitFor(() => expect(fields()).toHaveLength(5));
 
     generatorThreshold().focus();
     expect(document.activeElement).toBe(generatorThreshold());
@@ -245,7 +261,7 @@ describe("AutoRefillSettingsOverlay", () => {
 
   it("warns that the two intervals behave differently in each direction", async () => {
     renderOverlay();
-    await waitFor(() => expect(fields()).toHaveLength(4));
+    await waitFor(() => expect(fields()).toHaveLength(5));
     expect(screen.getByText(/A shorter interval pulls the next scan in/)).toBeInTheDocument();
   });
 
@@ -253,7 +269,7 @@ describe("AutoRefillSettingsOverlay", () => {
   // qualified accessible name a screen-reader user cannot tell which is which.
   it("gives the two subsystems' identical labels distinct accessible names", async () => {
     renderOverlay();
-    await waitFor(() => expect(fields()).toHaveLength(4));
+    await waitFor(() => expect(fields()).toHaveLength(5));
     expect(generatorThreshold()).not.toBe(waterThreshold());
     fireEvent.change(waterThreshold(), { target: { value: "30" } });
     expect(generatorThreshold()).toHaveValue(50);

@@ -14,7 +14,6 @@ LOOP_TOKEN_FILE="runtime/generated/sietch-overrides.loop-token"
 LOG_FILE="runtime/generated/sietch-overrides.log"
 LOG_POINTER_FILE="runtime/generated/sietch-overrides-current.log"
 TEXT_ROUTER_LOG="runtime/text-router/director-current.log"
-CONFIG_FILE="runtime/generated/sietch-config.json"
 RMQ_CREDS_FILE="runtime/generated/sietch-rmq-admin-creds"
 SHARED_RMQ_CREDS_FILES=("runtime/generated/deepdesert-rmq-admin-creds")
 TIMESTAMP_LEAD_SECONDS="${DUNE_SIETCH_OVERRIDE_TIMESTAMP_LEAD_SECONDS:-0}"
@@ -384,14 +383,10 @@ import os
 import subprocess
 import sys
 import time
-from pathlib import Path
 
 sys.path.insert(0, "runtime/scripts")
 import usersettings  # noqa: E402
 
-config_path = Path("runtime/generated/sietch-config.json")
-config = json.loads(config_path.read_text()) if config_path.exists() else {"partitions": {}}
-partitions = config.get("partitions", {})
 timestamp_lead = int(os.environ.get("TIMESTAMP_LEAD_SECONDS", "0"))
 survival_log_ready = os.environ.get("SURVIVAL_LOG_READY", "").lower() in ("1", "true", "t", "yes")
 
@@ -488,11 +483,13 @@ for line in result.stdout.splitlines():
     effective_ready = ready.lower() in ("t", "true", "1")
     if partition_id == "1" and survival_log_ready:
         effective_ready = True
-    cfg = partitions.get(partition_id, {})
-    display_name = cfg.get("display_name", "")
+    identity = usersettings.merged_partition_engine_values(
+        usersettings_config, "Survival_1", partition_id
+    )
+    display_name = str(identity.get("server_display_name") or "").strip()
     if not display_name and label:
         display_name = label if label.lower().startswith("sietch ") else f"Sietch {label}"
-    password = cfg.get("password", "")
+    password = str(identity.get("server_login_password") or "")
     payload = {
         "reportTimestamp": int(time.time()) + timestamp_lead,
         "partitionId": int(partition_id),
@@ -534,21 +531,17 @@ forward_batch_once() {
     survival_log_ready="true"
   fi
 
-  FILTER_MESSAGES="$messages" FILTER_CONFIG_PATH="$CONFIG_FILE" SURVIVAL_LOG_READY="$survival_log_ready" python3 - <<'PY'
+  FILTER_MESSAGES="$messages" SURVIVAL_LOG_READY="$survival_log_ready" python3 - <<'PY'
 import json
 import os
 import subprocess
 import sys
 import time
-from pathlib import Path
 
 sys.path.insert(0, "runtime/scripts")
 import usersettings  # noqa: E402
 
 messages = json.loads(os.environ["FILTER_MESSAGES"])
-config_path = Path(os.environ["FILTER_CONFIG_PATH"])
-config = json.loads(config_path.read_text()) if config_path.exists() else {"partitions": {}}
-partition_cfg = config.get("partitions", {})
 survival_log_ready = os.environ.get("SURVIVAL_LOG_READY", "").lower() in ("1", "true", "t", "yes")
 label_rows_raw = subprocess.check_output([
     "docker", "exec", "dune-postgres", "psql",
@@ -610,13 +603,15 @@ for offset, partition_id in enumerate(sorted(latest_by_partition, key=lambda val
     payload = latest_by_partition[partition_id]
     if partition_id == "1" and survival_log_ready:
         payload["ready"] = True
-    cfg = partition_cfg.get(partition_id, {})
-    display_name = cfg.get("display_name", "")
+    identity = usersettings.merged_partition_engine_values(
+        usersettings_config, "Survival_1", partition_id
+    )
+    display_name = str(identity.get("server_display_name") or "").strip()
     if not display_name:
         label = label_by_partition.get(partition_id, "")
         if label:
             display_name = label if label.lower().startswith("sietch ") else f"Sietch {label}"
-    password = cfg.get("password", "")
+    password = str(identity.get("server_login_password") or "")
     game_addr, game_port = endpoint_by_partition.get(partition_id, ("", "0"))
     if game_addr:
         payload["ip"] = game_addr

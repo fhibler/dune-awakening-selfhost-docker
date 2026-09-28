@@ -20,8 +20,11 @@ type AutoRefillSettingsOverlayProps = {
 // the visible label is identical on both sides.
 type FieldSpec = { key: AutoRefillSettingKey; label: string; unit: string; group: string };
 
+// Windtraps share the generator scan (and its interval) but have their own
+// threshold, since 5 filters move in 20% steps.
 const GENERATOR_FIELDS: FieldSpec[] = [
   { key: "thresholdPercent", label: "Queue a refill below", unit: "%", group: "Generators" },
+  { key: "windtrapThresholdPercent", label: "Windtraps: queue a refill below", unit: "%", group: "Generators" },
   { key: "intervalHours", label: "Check every", unit: "h", group: "Generators" }
 ];
 
@@ -211,7 +214,7 @@ export function AutoRefillSettingsOverlay({ onClose, onSaved, onError }: AutoRef
         {loading ? <p className="muted">Loading…</p> : state && (
           <>
             <div className="auto-refill-settings-group">
-              <span className="auto-refill-settings-group-title">Generators</span>
+              <span className="auto-refill-settings-group-title">Generators &amp; Windtraps</span>
               {GENERATOR_FIELDS.map(renderField)}
             </div>
             <div className="auto-refill-settings-group auto-refill-settings-group-divided">

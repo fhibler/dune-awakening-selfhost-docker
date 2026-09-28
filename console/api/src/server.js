@@ -61,6 +61,8 @@ import { liveMapPoi } from "./services/liveMapPoi.js";
 import { deliverMapChatToRecipients } from "./services/mapChatDelivery.js";
 import { applySavedLandsraadMilestonePreset, createLandsraadMilestoneReconciler, readLandsraadMilestonePreset, saveLandsraadMilestonePreset } from "./services/landsraadMilestones.js";
 import { exportBlueprint, importBlueprint, listBlueprints, deleteBlueprint } from "./blueprints.js";
+import { BaseBackupError, baseBackupHttpError, checkBaseBackupDeletable, deleteBaseBackup, exportBaseBackup, exportLiveBase, importBaseBackup, listBaseBackups, updateBaseBackup } from "./baseBackups.js";
+import { readSteamBuildId } from "./services/steamBuild.js";
 import { getCommunityBlueprint, getCommunityBlueprintPreview, listCommunityBlueprints } from "./services/blueprintCatalog.js";
 import { createZipArchive } from "./services/zipArchive.js";
 import { resolveMapCombatState } from "./services/mapCombatState.js";
@@ -68,7 +70,7 @@ import { grantAddonItem } from "./addonItemGrants.js";
 import { deleteAddonData, listAddonData, readAddonData, writeAddonData } from "./addonDataStore.js";
 import { createAddonDeliveryService, deferAddonDelivery } from "./addonDeliveries.js";
 import { EDA_EXCHANGE_BOT_ADDON_ID, ADDON_SCHEDULER_PERMISSION, createAddonJobScheduler, probeBuybackEligibility, refreshBuybackLog, readBuybackLog, clearBuybackLog, readBuybackSchedule, saveBuybackSchedule, readSeedSchedule, saveSeedSchedule } from "./addonJobs.js";
-import { createPublicDirectoryReporter, normalizeDiscordInvite, readDirectorySettings } from "./services/publicDirectory.js";
+import { createPublicDirectoryReporter, normalizeDiscordInvite, readDirectorySettings, readGameBuild } from "./services/publicDirectory.js";
 import { choamTerminalOverview, installChoamTerminals, removeChoamTerminals, setChoamTerminalPosition, clearChoamTerminalPosition, derivePlacementFromPlayer, evaluateCaptureFreshness } from "./services/choamTerminals.js";
 import { exchangeStats, listExchangeItems, listExchangeListings, readExchangeConfig, saveExchangeConfig } from "./services/exchange.js";
 import { ensureExchangeHistory, listExchangeTransactions } from "./services/exchangeHistory.js";
@@ -92,6 +94,8 @@ import { readSelfUpdateStatus } from "./services/selfUpdateStatus.js";
 import { createScheduledMapMessageScheduler } from "./services/scheduledMapMessages.js";
 import { createQaUpdates } from "./services/qaUpdates.js";
 import { SETUP_CONFIG_KEYS, validHostDatacenterId } from "./services/setupConfig.js";
+import { readRestartHistory } from "./services/restartHistory.js";
+import { playerListSettingsView, resolvePlayerInactiveWeeks, savePlayerListSettings } from "./services/playerListSettings.js";
 
 const config = loadConfig();
 const hardwareStatus = createHardwareStatusProvider({ filesystemPath: config.repoRoot });
@@ -733,6 +737,7 @@ async function handleApi(req, res) {
 
   if (path === "/api/server/status") return serverStatusRoute(res, url);
   if (path === "/api/server/performance") return json(res, 200, await collectPerformanceSnapshot(config.repoRoot));
+  if (path === "/api/server/restart-history") return json(res, 200, readRestartHistory(config));
   if (path === "/api/server/readiness") return safeCommandJson(res, "readiness");
   if (path === "/api/server/ports") return commandJson(res, "ports");
   if (path === "/api/server/services") return commandJson(res, "services");
@@ -963,6 +968,17 @@ async function handleApi(req, res) {
     });
   }
 
+  if (path === "/api/players/list-settings" && req.method === "GET") {
+    return json(res, 200, {
+      ...playerListSettingsView(config.repoRoot),
+      canConfigure: evaluate(session, "players:configure-list")
+    });
+  }
+  if (path === "/api/players/list-settings" && req.method === "POST") {
+    const result = savePlayerListSettings(config.repoRoot, await readJson(req));
+    audit(config, req, "players.list-settings-updated", { inactiveWeeks: result.settings.inactiveWeeks, source: result.source });
+    return json(res, 200, result);
+  }
   if (path === "/api/players") return dbJson(res, () => duneDb.listPlayers(db, {
     q: url.searchParams.get("q") || "",
     page: url.searchParams.get("page") || 0,
@@ -970,6 +986,7 @@ async function handleApi(req, res) {
     status: url.searchParams.get("status") || "all",
     sortColumn: url.searchParams.get("sortColumn") || "character_name",
     sortDirection: url.searchParams.get("sortDirection") || "asc",
+    inactiveWeeks: url.searchParams.get("recentOnly") === "1" ? resolvePlayerInactiveWeeks(config.repoRoot) : null,
     bannedFlsIds: bannedFlsIds(config.repoRoot)
   }));
   if (path === "/api/players/online") return dbJson(res, () => duneDb.listPlayers(db, {
@@ -1011,6 +1028,7 @@ async function handleApi(req, res) {
   if (path === "/api/bases/pending-deletes") return pendingBaseDeletesRoute(res);
   if (path === "/api/bases/pending-child-access") return pendingChildAccessRoute(res);
   if (path.match(/^\/api\/bases\/[^/]+\/export$/) && req.method === "GET") return baseBlueprintDownloadRoute(req, res, path);
+  if (path.match(/^\/api\/bases\/[^/]+\/export-backup$/) && req.method === "GET") return liveBaseBackupExportRoute(req, res, path);
   if (path.match(/^\/api\/bases\/[^/]+\/refill-generators$/) && req.method === "POST") return baseRefillGeneratorsRoute(req, res, path);
   if (path.match(/^\/api\/bases\/[^/]+\/queued-refill$/) && req.method === "DELETE") return baseCancelQueuedRefillRoute(req, res, path);
   if (path.match(/^\/api\/bases\/[^/]+\/auto-refill$/) && req.method === "POST") return baseAutoRefillToggleRoute(req, res, path);
@@ -1203,6 +1221,11 @@ async function handleApi(req, res) {
   if (path.match(/^\/api\/blueprints\/([^/]+)\/export$/) && req.method === "GET") return blueprintExportRoute(req, res, path);
   if (path === "/api/blueprints/import" && req.method === "POST") return blueprintImportRoute(req, res);
   if (path.match(/^\/api\/blueprints\/([^/]+)$/) && req.method === "DELETE") return blueprintsDeleteRoute(req, res, path);
+  if (path === "/api/base-backups" && req.method === "GET") return baseBackupListRoute(res, url);
+  if (path.match(/^\/api\/base-backups\/[^/]+\/export$/) && req.method === "GET") return baseBackupExportRoute(req, res, path);
+  if (path === "/api/base-backups/import" && req.method === "POST") return baseBackupImportRoute(req, res);
+  if (path.match(/^\/api\/base-backups\/[^/]+$/) && req.method === "PUT") return baseBackupUpdateRoute(req, res, path);
+  if (path.match(/^\/api\/base-backups\/[^/]+$/) && req.method === "DELETE") return baseBackupDeleteRoute(req, res, path);
   if (path === "/api/care-package/capabilities") return json(res, 200, carePackageCapabilities());
   if (path === "/api/care-package/config" && req.method === "POST") return carePackageConfigRoute(req, res);
   if (path === "/api/care-package/config") return json(res, 200, carePackageConfig(config));
@@ -5483,6 +5506,157 @@ async function blueprintImportRoute(req, res) {
   } catch (error) {
     if (error.unsupported) return json(res, 501, { supported: false, error: redact(error?.message || "Unexpected error.") });
     return json(res, 500, { ok: false, error: redact(error?.message || "Unexpected error.") });
+  }
+}
+
+// Base backups: the game's own "pick up base" backups (see baseBackups.js).
+function baseBackupErrorResponse(res, error) {
+  const { status, body } = baseBackupHttpError(error);
+  return json(res, status, body);
+}
+
+async function baseBackupListRoute(res, url) {
+  try {
+    return json(res, 200, await listBaseBackups(db, { playerId: url.searchParams.get("playerId") || "" }));
+  } catch (error) {
+    return baseBackupErrorResponse(res, error);
+  }
+}
+
+function attachmentName(value) {
+  return String(value || "").replace(/[^a-zA-Z0-9_-]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 80);
+}
+
+// Sends a base backup file. `exporter(versionInfo)` returns { text, summary }.
+// Rate limited (each export is a ~20-statement snapshot that holds a pool
+// connection for a second or two) and audited: the file carries every item
+// stored in the base.
+async function sendBaseBackupFile(req, res, exporter, suffix, auditDetail) {
+  if (!applyMutationRateLimit(req, res, "base-backups.export")) return;
+  try {
+    const { text, summary } = await exporter({
+      gameBuild: readGameBuild(config.repoRoot),
+      steamBuildId: await readSteamBuildId({ repoRoot: config.repoRoot }),
+      consoleVersion: config.version,
+      consoleBuildId: publicConfig(config).buildId
+    });
+    const stem = [attachmentName(summary.ownerName), attachmentName(summary.name)].filter(Boolean).join("_") || "base";
+    audit(config, req, "base-backups.export", { ...auditDetail, name: summary.name, ownerName: summary.ownerName, result: "ok" });
+    res.writeHead(200, {
+      "content-type": "application/json; charset=utf-8",
+      "content-disposition": `attachment; filename="${stem}_base-backup_${suffix}.json"`
+    });
+    return res.end(text);
+  } catch (error) {
+    audit(config, req, "base-backups.export", { ...auditDetail, result: "failed", code: error?.code || "error" });
+    return baseBackupErrorResponse(res, error);
+  }
+}
+
+async function baseBackupExportRoute(req, res, path) {
+  const backupId = Number(decodeURIComponent(path.split("/")[3]));
+  if (!Number.isInteger(backupId) || backupId < 1) return json(res, 400, { ok: false, code: "invalid", error: "Invalid base backup ID" });
+  return sendBaseBackupFile(req, res, (versionInfo) => exportBaseBackup(db, backupId, versionInfo), backupId, { backupId });
+}
+
+// A live base (a Bases row) downloaded as a base backup file. Read-only.
+async function liveBaseBackupExportRoute(req, res, path) {
+  const baseId = Number(decodeURIComponent(path.split("/")[3]));
+  if (!Number.isInteger(baseId) || baseId < 1) return json(res, 400, { ok: false, code: "invalid", error: "Invalid base ID" });
+  return sendBaseBackupFile(req, res, (versionInfo) => exportLiveBase(db, baseId, versionInfo), `live_${baseId}`, { baseId, source: "live-base" });
+}
+
+async function baseBackupImportRoute(req, res) {
+  let playerPawnId = null;
+  try {
+    const { fields, files } = await readMultipartForm(req, 32 << 20);
+    playerPawnId = Number(String(fields.player_id || ""));
+    if (!Number.isInteger(playerPawnId) || playerPawnId < 1) return json(res, 400, { ok: false, code: "invalid", error: "Invalid player_id" });
+    const fileEntry = Array.isArray(files) ? files.find((f) => f.fieldName === "file" && f.fileName) : files;
+    if (!fileEntry?.content) return json(res, 400, { ok: false, code: "invalid", error: "Base backup file required" });
+    const allowVersionMismatch = ["1", "true", "yes"].includes(String(fields.allow_version_mismatch || "").toLowerCase());
+    const result = await importBaseBackup(db, playerPawnId, fileEntry.content, {
+      allowVersionMismatch,
+      serverBuild: readGameBuild(config.repoRoot)
+    });
+    audit(config, req, "base-backups.import", { playerPawnId, fileName: String(fileEntry.fileName || "").slice(0, 200), result });
+    return json(res, 200, result);
+  } catch (error) {
+    // A file that fails validation never reached the database; everything
+    // else (timeouts, version refusals, database errors) is worth a trail.
+    if (!(error instanceof BaseBackupError && error.code === "invalid_file")) {
+      audit(config, req, "base-backups.import", {
+        playerPawnId,
+        result: error?.code === "timeout" ? "timeout" : "failed",
+        code: error?.code || null,
+        step: error?.details?.step || null,
+        // Game-function errors can echo a whole row of the uploaded file.
+        error: redact(error?.message || "").slice(0, 1000)
+      });
+    }
+    return baseBackupErrorResponse(res, error);
+  }
+}
+
+// Reassign and/or rename a picked-up base. Not directDbMutation: that wrapper
+// turns every failure into a 400, and the UI needs 404 (redeployed meanwhile)
+// and 409 (owner online) to say what happened.
+async function baseBackupUpdateRoute(req, res, path) {
+  const backupId = Number(decodeURIComponent(path.split("/")[3]));
+  if (!Number.isInteger(backupId) || backupId < 1) return json(res, 400, { ok: false, code: "invalid", error: "Invalid base backup ID" });
+  const body = await readJson(req);
+  if (!applyMutationRateLimit(req, res, "base-backups.edit")) return;
+  const change = { ownerPlayerId: body.ownerPlayerId, name: body.name, map: body.map };
+  try {
+    const result = await updateBaseBackup(db, backupId, change);
+    audit(config, req, "base-backups.edit", { backupId, result });
+    return json(res, 200, result);
+  } catch (error) {
+    if (!(error instanceof BaseBackupError && ["invalid_name", "invalid_map", "no_change"].includes(error.code))) {
+      audit(config, req, "base-backups.edit", {
+        backupId,
+        requested: {
+          ownerPlayerId: change.ownerPlayerId ?? null,
+          name: change.name == null ? null : String(change.name).slice(0, 200),
+          map: change.map == null ? null : String(change.map).slice(0, 64)
+        },
+        result: error?.code === "timeout" ? "timeout" : "failed",
+        code: error?.code || null,
+        error: redact(error?.message || "").slice(0, 1000)
+      });
+    }
+    return baseBackupErrorResponse(res, error);
+  }
+}
+
+// Permanently delete a picked-up base and everything stored in it. Same bar as
+// deleting a live base: a confirmation phrase, and a mandatory full-database
+// safety backup before any delete SQL runs -- if the backup fails, nothing is
+// deleted.
+async function baseBackupDeleteRoute(req, res, path) {
+  const backupId = Number(decodeURIComponent(path.split("/")[3]));
+  if (!Number.isInteger(backupId) || backupId < 1) return json(res, 400, { ok: false, code: "invalid", error: "Invalid base backup ID" });
+  const body = await readJson(req);
+  if (body.confirmation !== "DELETE BACKUP") {
+    return json(res, 400, { ok: false, code: "confirmation_required", error: "Confirmation phrase required: DELETE BACKUP" });
+  }
+  if (!applyMutationRateLimit(req, res, "base-backups.delete")) return;
+  if (config.mockMode) return json(res, 200, { ok: true, mock: true, backupId });
+  try {
+    // Fail fast (owner online, already gone) before the slow safety backup.
+    await checkBaseBackupDeletable(db, backupId);
+    await runDune(config, buildDuneArgs("backupCreate"), { env: { DB_BACKUP_ORIGIN: "base-backup-delete" } });
+    const result = await deleteBaseBackup(db, backupId);
+    audit(config, req, "base-backups.delete", { backupId, backupCreated: true, result });
+    return json(res, 200, { ...result, backupCreated: true });
+  } catch (error) {
+    audit(config, req, "base-backups.delete", {
+      backupId,
+      result: error?.code === "timeout" ? "timeout" : "failed",
+      code: error?.code || null,
+      error: redact(error?.message || "").slice(0, 1000)
+    });
+    return baseBackupErrorResponse(res, error);
   }
 }
 

@@ -722,18 +722,32 @@ map_default_overrides = {
 }
 memory = env.get(env_key(name)) or map_default_overrides.get(name) or catalog_memory or env.get("DUNE_MEMORY_DEFAULT") or "default"
 
-partition_config = config.get("partitions", {})
 def default_display_name(row):
     label = str(row.get("label") or "").strip()
     if not label:
         return "(unset)"
     return label if label.lower().startswith("sietch ") else f"Sietch {label}"
 
-display_values = [
-    partition_config.get(str(row.get("id")), {}).get("display_name") or default_display_name(row)
-    for row in rows
-]
-password_set = [bool(partition_config.get(str(row.get("id")), {}).get("password")) for row in rows]
+import subprocess
+server_engine_values = {}
+partition_ids = [str(row.get("id")) for row in rows]
+if partition_ids:
+    try:
+        proc = subprocess.run(
+            ["python3", "runtime/scripts/usersettings.py", "partition-engine-values-many", name, *partition_ids],
+            capture_output=True, text=True, timeout=10,
+        )
+        if proc.returncode == 0 and proc.stdout.strip():
+            server_engine_values = json.loads(proc.stdout)
+    except Exception:
+        pass
+
+display_values = []
+password_set = []
+for row in rows:
+    values = server_engine_values.get(str(row.get("id")), {}) or {}
+    display_values.append(str(values.get("server_display_name") or "").strip() or default_display_name(row))
+    password_set.append(bool(values.get("server_login_password")))
 display_summary = "(mixed)" if len(set(display_values)) > 1 else display_values[0]
 password_summary = "(set)" if any(password_set) else "(unset)"
 
@@ -809,7 +823,6 @@ else:
 if active_only:
     rows = rows[:max(0, active_dimensions)]
 
-partition_config = config.get("partitions", {})
 def default_display_name(row):
     label = str(row.get("label") or "").strip()
     if not label:
@@ -822,7 +835,7 @@ def default_display_name(row):
 # into this same field). It must win over the legacy sietch-config.json mirror and
 # the DB-label-derived generic name below.
 import subprocess
-server_display_names = {}
+server_engine_values = {}
 partition_ids = [str(row.get("id")) for row in rows]
 if partition_ids:
     try:
@@ -832,17 +845,21 @@ if partition_ids:
         )
         if proc.returncode == 0 and proc.stdout.strip():
             for pid, values in json.loads(proc.stdout).items():
-                name = str((values or {}).get("server_display_name") or "").strip()
-                if name:
-                    server_display_names[pid] = name
+                values = values or {}
+                server_engine_values[pid] = {
+                    "display_name": str(values.get("server_display_name") or "").strip(),
+                    "password": str(values.get("server_login_password") or ""),
+                }
     except Exception:
         pass
 
-def resolved_display_name(row, cfg):
-    configured = server_display_names.get(str(row.get("id")))
-    if configured:
-        return configured
-    return cfg.get("display_name") or default_display_name(row)
+def resolved_display_name(row):
+    identity = server_engine_values.get(str(row.get("id")), {})
+    return identity.get("display_name") or default_display_name(row)
+
+def resolved_password_state(row):
+    identity = server_engine_values.get(str(row.get("id")), {})
+    return "(set)" if identity.get("password") else "(unset)"
 
 if mode == "--ids":
     for row in rows:
@@ -854,27 +871,21 @@ elif mode.startswith("--partition-at="):
     print(rows[index - 1].get("id"))
 elif mode == "--numbered":
     for idx, row in enumerate(rows, 1):
-        pid = str(row.get("id"))
-        cfg = partition_config.get(pid, {})
-        display = resolved_display_name(row, cfg)
-        password = "(set)" if cfg.get("password") else "(unset)"
+        display = resolved_display_name(row)
+        password = resolved_password_state(row)
         print(f"{idx}) {row.get('map')} Dimension {row.get('dimension', 0)}")
         print(f"   Display Name: {display}")
         print(f"   Password: {password}")
 elif mode == "--labels":
     for row in rows:
-        pid = str(row.get("id"))
-        cfg = partition_config.get(pid, {})
-        display = resolved_display_name(row, cfg)
-        password = "(set)" if cfg.get("password") else "(unset)"
+        display = resolved_display_name(row)
+        password = resolved_password_state(row)
         print(f"{row.get('map')} Dimension {row.get('dimension', 0)}  Display Name: {display}  Password: {password}")
 else:
     print(f"{'DIMENSION':<10} {'DISPLAY NAME':<32} PASSWORD")
     for row in rows:
-        pid = str(row.get("id"))
-        cfg = partition_config.get(pid, {})
-        display = resolved_display_name(row, cfg)
-        password = "(set)" if cfg.get("password") else "(unset)"
+        display = resolved_display_name(row)
+        password = resolved_password_state(row)
         print(f"{str(row.get('dimension', 0)):<10} {display:<32} {password}")
 PY
 }
@@ -2011,11 +2022,8 @@ import os
 import sys
 from pathlib import Path
 
-config_path = Path(sys.argv[3])
 partition_id = str(sys.argv[5])
 partition_path = Path(sys.argv[1])
-config = json.loads(config_path.read_text()) if config_path.exists() else {"maps": {}, "partitions": {}}
-entry = config.get("partitions", {}).get(partition_id, {})
 db_partitions = os.environ.get("SIETCH_DB_PARTITIONS_JSON")
 partitions = json.loads(db_partitions) if db_partitions else (json.loads(partition_path.read_text()) if partition_path.exists() else [])
 row = next((item for item in partitions if str(item.get("id")) == partition_id), {})
@@ -2029,32 +2037,34 @@ def default_display_name(partition_row):
         return ""
     return label if label.lower().startswith("sietch ") else f"Sietch {label}"
 
-def effective_display_name(map_name, pid):
-    # The merged Bgd.ServerDisplayName (partition -> map -> global UserEngine.ini)
-    # already reflects any per-partition name set via "sietches set-display", so it
-    # must win over the legacy sietch-config.json mirror and the DB-label fallback.
+def effective_identity(map_name, pid):
+    # Resolve both identity fields from the same merged UserEngine.ini source that
+    # is materialized for the game server. This keeps restart arguments aligned
+    # with the global -> map -> partition precedence shown in the Console.
     import subprocess
+    values = {}
     try:
         proc = subprocess.run(
             ["python3", "runtime/scripts/usersettings.py", "partition-engine-values", map_name, pid],
             capture_output=True, text=True, timeout=10,
         )
         if proc.returncode != 0:
-            return ""
+            return values
         for line in proc.stdout.splitlines():
             key, _, value = line.partition("\t")
-            if key == "server_display_name":
-                return value.strip()
+            if key in {"server_display_name", "server_login_password"}:
+                values[key] = value
     except Exception:
         pass
-    return ""
+    return values
 
 args = []
-display_name = effective_display_name(sys.argv[4], partition_id) or entry.get("display_name") or default_display_name(row)
+identity = effective_identity(sys.argv[4], partition_id)
+display_name = str(identity.get("server_display_name") or "").strip() or default_display_name(row)
 if display_name:
     args.append(f"-ServerDisplayName={ini_quote(display_name)}")
-if entry.get("password"):
-    password = ini_quote(entry['password'])
+if identity.get("server_login_password"):
+    password = ini_quote(identity["server_login_password"])
     args.append(f"-ServerLoginPassword={password}")
     args.append(f"-ServerPassword={password}")
 
