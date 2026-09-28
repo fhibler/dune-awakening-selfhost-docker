@@ -208,6 +208,35 @@ assert_contains "$out" "OK   Docker Compose v2 available" \
   "the real Compose v2 plugin is accepted"
 fake_engine_stop
 
+# --- podman-docker's profile.d DOCKER_HOST --------------------------------
+#
+# The failure is that nothing fails: a DOCKER_HOST pointing at the rootless
+# socket makes every `docker` call answer about an engine with none of this
+# stack's containers, and `docker ps` returns an empty list rather than an
+# error. The seam leaves a DOCKER_HOST it did not set alone, so doctor is the
+# only thing that can notice.
+
+use_engine podman
+published_socket="$(DOCKER_HOST='' dune_engine_probe_socket podman)"
+
+export DOCKER_HOST="unix:///run/user/1000/podman/podman.sock"
+out="$(check_podman_host_tools 2>&1)"
+assert_contains "$out" "WARN DOCKER_HOST=unix:///run/user/1000/podman/podman.sock" \
+  "a DOCKER_HOST pointing away from the published socket is reported"
+assert_contains "$out" "/etc/profile.d/podman-docker.sh" \
+  "the warning names where an unset-by-the-operator value came from"
+
+export DOCKER_HOST="unix://$published_socket"
+out="$(check_podman_host_tools 2>&1)"
+assert_missing "$out" "WARN DOCKER_HOST=" \
+  "a DOCKER_HOST naming the socket this host publishes is not reported"
+
+unset DOCKER_HOST
+out="$(check_podman_host_tools 2>&1)"
+assert_missing "$out" "WARN DOCKER_HOST=" \
+  "an unset DOCKER_HOST is not reported"
+fake_engine_stop
+
 if [ "$failures" -ne 0 ]; then
   echo "doctor engine checks: $failures failure(s)" >&2
   exit 1

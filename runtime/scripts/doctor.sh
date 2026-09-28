@@ -70,6 +70,25 @@ check_podman_host_tools() {
     echo "     Podman hosts still need it to speak Docker's API: sudo dnf install -y podman-docker"
   fi
 
+  # `podman-docker` ships /etc/profile.d/podman-docker.sh, which points
+  # DOCKER_HOST at the *rootless* socket. Every login shell on the host then
+  # addresses an engine that has none of this stack's containers, and nothing
+  # errors: `docker ps` simply answers an empty list, and every script that
+  # asks whether a container exists is told no. The seam treats a DOCKER_HOST
+  # it did not set as the operator's own and leaves it alone, so this is the
+  # only place that can say it looks wrong.
+  #
+  # Compared against the socket the seam would have chosen by itself, not
+  # against a literal path: on a host that skipped the podman.socket drop-in
+  # the seam sets DOCKER_HOST to Podman's own socket, and that is correct.
+  local published_socket
+  published_socket="$(DOCKER_HOST='' dune_engine_probe_socket "$DUNE_ENGINE_KIND")"
+  if [ -n "${DOCKER_HOST:-}" ] && [ "${DOCKER_HOST#unix://}" != "$published_socket" ]; then
+    warn_msg "DOCKER_HOST=$DOCKER_HOST, but this host publishes its engine socket at $published_socket"
+    echo "     Commands in this shell address a different engine, which has none of this stack's containers."
+    echo "     If you did not set it, it came from /etc/profile.d/podman-docker.sh: unset DOCKER_HOST"
+  fi
+
   if docker info >/dev/null 2>&1; then
     ok "Podman's Docker-compatible API reachable at $DUNE_ENGINE_SOCKET"
   else

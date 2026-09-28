@@ -365,6 +365,16 @@ and route `docker compose` to `podman compose`, which ignores the Compose plugin
 directory entirely. The installer detects the shim by what the client prints and
 refuses to finish behind it.
 
+It also ships `/etc/profile.d/podman-docker.sh`, which exports `DOCKER_HOST`
+pointing at the **rootless** socket — and that survives the shim's removal,
+because a profile script is not what `command -v docker` looks at. Every login
+shell on such a host then addresses an engine holding none of this stack's
+containers, and nothing errors: `docker ps` answers an empty list, and every
+script that asks whether a container exists is told no. The seam treats a
+`DOCKER_HOST` it did not set as the operator's own and leaves it alone, so
+`dune doctor` warns instead, naming the profile script. `unset DOCKER_HOST` is
+the fix; removing the file is the durable one.
+
 **The Docker CLI and the Compose v2 plugin**, as static builds — CLI 27.5.1 and
 Compose 2.29.7, the same versions `console/api/Dockerfile` pins, kept in step by
 a cross-file test. Host and console drive one socket; a skew shows up as a
@@ -381,9 +391,11 @@ command name surviving `env`/`sudo`.
 ```ini
 [Socket]
 ListenStream=
-ListenStream=/var/run/docker.sock
+ListenStream=/run/docker.sock
 SocketGroup=podman
 SocketMode=0660
+RemoveOnStop=yes
+ExecStartPre=-/usr/bin/rm -f /run/docker.sock
 ```
 
 The empty `ListenStream=` is load-bearing: it **clears** the list inherited from
@@ -392,6 +404,30 @@ exactly one activation file descriptor and refuses to start with *"wrong number
 of file descriptors for socket activation protocol (2 != 1)"* if the socket
 hands it two. Replacing the path also means nothing has to traverse
 `/run/podman`, which systemd keeps at `0700 root:root`.
+
+The last three lines are what make the socket **restartable**. Without them it
+comes up once, at install time, and every later start fails with `podman.socket:
+Failed to create listening socket (/run/docker.sock): Address already in use`,
+leaving the host with no compat API until someone `rm`s the file by hand:
+
+- `ListenStream=` names `/run/docker.sock`, not the `/var/run/` alias every
+  bind mount in this repo spells. They are the same file — `/var/run` is a
+  symlink to `/run` — but systemd rewrites a listen path "below legacy
+  directory /var/run/" to its `/run/` form, and its own cleanup then stops
+  matching reliably. With the alias, even `RemoveOnStop=yes` survives only a
+  single stop/start before the failure returns.
+- `RemoveOnStop=yes`, because systemd does not unlink an `AF_UNIX` listener on
+  stop by default. The stale inode survives with nothing holding it — `ss -lx`
+  shows no listener, `fuser` no opener — and the next `bind()` still refuses it.
+- `ExecStartPre` clears the path anyway, because `RemoveOnStop` alone loses a
+  race: `podman.service` is socket-activated, `Type=exec`/`KillMode=process`,
+  so a client actively polling the API — `dune-autoscaler` does, every few
+  seconds — can still hold the inherited listening fd as the socket rebinds.
+  The removal is skipped, the start fails, and a failed start orphans the file,
+  after which *every* later start fails. The race is not self-correcting.
+
+`tests/install-podman-bootstrap-test.sh` asserts all three against the
+drop-in `install.sh` writes.
 
 Publishing the API *at* `/var/run/docker.sock` is what lets the console, the
 orchestrator and every container the orchestrator spawns work unchanged, and it
@@ -439,6 +475,17 @@ Podman path sets to `false`. Expect to re-check the label set once it does —
 dropping the flag is what finally exposes whether Podman's labels match the
 recording rules, and that question is still open.
 
+**A `podman.socket` restart leaves the autoscaler dead.** Restarting the
+socket unit drops every client on the compat API, which is expected and is what
+`G0-2` asserts the drop-in survives. `dune-autoscaler` does not survive it: it
+exits instead of reconnecting, and nothing brings it back, so autoscaling stays
+off until someone restarts the container. This is not Podman-specific in
+principle — the same loss happens across a `dockerd` restart — but only the
+Podman path has a documented reason to restart the engine's socket, which is
+what makes it a gap worth naming here. Until the client retries, treat
+`systemctl restart podman.socket` as requiring
+`docker restart dune-autoscaler` after it.
+
 **Rootless Podman is not supported.** The stack publishes privileged ports and
 bind-mounts host paths across containers. Nothing here is written against
 rootless assumptions, and section 3 applies to a rootless socket too: it confers
@@ -469,7 +516,7 @@ whether the host remaps user namespaces under the stack, whether SELinux lets
 the privileged helpers through, what the compat endpoint does with a flag it
 does not support. That checklist was written twice and run zero times, and an
 unrecorded answer is one nobody can audit — so the claims outlived two plans
-unverified. Ten of the twelve have since been run; see "What it has answered"
+unverified. All twelve have since been run; see "What it has answered"
 below.
 
 `tests/podman-host-gate.sh` is that checklist as one script. Twelve probes —
@@ -549,8 +596,9 @@ v2, both driven through the pinned Docker CLI 27.5.1 and Compose 2.29.7 against
 the compat socket, which is the configuration this document describes. The
 first seven ran on an enforcing host with the stack installed and up with three
 game servers; `G0-3`, `P2` and `P3` ran on an idle SELinux-permissive host with
-no stack, which is why they are marked. Ten probes, ten `ANSWERED`, no
-blockers:
+no stack, which is why they are marked. That second host was then raised to a
+full enforcing deployment for the last two. **Twelve probes, twelve
+`ANSWERED`, no blockers:**
 
 | Probe | Answer | Consequence |
 | --- | --- | --- |
@@ -564,22 +612,31 @@ blockers:
 | `G0-3` † | cAdvisor names no container at all under `--docker_only=true`; the only `container_cpu_usage_seconds_total` sample is the root cgroup `id="/"` | `C9` **is required** — `--docker_only` must be parameterised, or 4 of 22 alerts go dark |
 | `P2` † | `podman builder prune` exists; the compat `docker builder prune` fails with `Not Found` (exit 1) | `B2` is right; `storage.sh:177-181`'s comment must stop claiming the subcommand is absent |
 | `P3` † | `docker update --memory/--memory-swap/--memory-reservation` moved a live container's limits from `0 0 0` to the requested values | The memory balancer's live path (`memory.sh:342`, `memory-swap.sh:96`) holds on the compat endpoint |
+| `G0-2` ‡ | No container AVCs; the three `exec` assertions, the privileged host-systemd helper, `dune-net` DNS and the socket drop-in surviving a restart all hold | The SELinux work signs off as complete — **once** `DUNE_ENGINE_SOCKET_SECURITY_OPT` exists; see section 4 |
+| `P5` ‡ | `docker rm -f` on a running game server returned in `0m0.076s` | Any number of servers fits inside `shutdown-protection.service`'s `TimeoutStopSec=240` |
 
 † on the permissive host without the stack. Neither bears on SELinux: `P2` and
 `P3` exercise the compat API, and `G0-3`'s answer is a cAdvisor factory
-question. `G0-3` is nonetheless worth one confirming run on an enforcing host
-with game servers up, because its subjects there were the metrics containers
-themselves rather than a full stack.
+question. `G0-3` was re-run on that host once it carried a full enforcing
+deployment, and the answer did not move: still one
+`container_cpu_usage_seconds_total` sample, still no `dune-*` name.
+
+‡ on that same host after it was raised to a full enforcing deployment, with
+**no** SELinux policy module installed and `container_connect_any` `off`.
 
 `G0-3`'s answer has a cause, not just a correlation: cAdvisor's own log shows it
 registering **both** a Docker factory and a Podman factory, and `--docker_only`
 keeps only the first. Podman's containers belong to the other one.
 
-Two remain open, and both need the stack installed on a host that may be
-damaged: `G0-2` restarts `podman.socket` under a live orchestrator and asserts
-against the Console and `dune-postgres`, and `P5` destroys a running game
-server to time `docker rm -f`. `G0-2` additionally needs SELinux enforcing.
-They need the VM that "What it costs" asks for.
+`G0-2` is the probe that nearly passed for the wrong reason. Its first
+`ANSWERED` on that host came from a hand-installed policy module allowing
+`container_t` the `connectto`; removing the module made the orchestrator and
+the Console fail outright, which is what produced the
+`DUNE_ENGINE_SOCKET_SECURITY_OPT` seam. The run recorded above is without it.
+`G0-2` also proved its own §14.15 premise the hard way: a `podman.socket`
+restart drops every compat-API client, and `dune-autoscaler` **exits
+permanently** rather than reconnecting, so autoscaling stays dead until someone
+restarts the container. That one is still open; see section 6.
 
 ---
 
