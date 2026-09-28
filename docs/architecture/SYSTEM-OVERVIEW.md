@@ -414,5 +414,5 @@ section for which is which.
 - [`docs/console-iam.md`](../console-iam.md) — authorization pipeline detail.
 - [`docs/console/API-REFERENCE.md`](../console/API-REFERENCE.md) — full HTTP endpoint reference.
 - [`docs/runtime/MULTI-SERVER-SINGLE-PUBLIC-IP.md`](../runtime/MULTI-SERVER-SINGLE-PUBLIC-IP.md) — running multiple battlegroups behind one public IPv4.
-- [`CONTAINER-ENGINES.md`](CONTAINER-ENGINES.md) — Docker and Podman: the engine seam, host prerequisites, and the pod decision record.
+- [`CONTAINER-ENGINES.md`](CONTAINER-ENGINES.md) — Docker and Podman: the engine seam, host prerequisites, the `tests/podman-host-gate.sh` on-host gate, and the pod decision record.
 - [`docs/operator-guide.md`](../operator-guide.md) — end-user/operator walkthrough.

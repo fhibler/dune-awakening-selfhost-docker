@@ -215,9 +215,17 @@ database that survives the removal after it.
 
 ### Logging
 
-Podman's `json-file` driver accepts `max-size` but rejects `max-file`. The
-imperative half reads `DUNE_ENGINE_SUPPORTS_LOG_MAX_FILE` and simply omits the
-flag. The declarative half is an open gap; see section 6.
+Podman's `json-file` driver accepts `max-size` but does not support
+`max-file`. The imperative half reads `DUNE_ENGINE_SUPPORTS_LOG_MAX_FILE` and
+simply omits the flag. The declarative half is an open gap; see section 6.
+
+Which way the unsupported flag fails is not yet established, and the repo
+currently describes it three ways: rejected at container creation (this
+document), accepted and ignored (section 6), and the log truncated rather than
+rolled (the operator guide). At most one of those is true. `G0-1` in section 7
+is the probe that settles it, and the answer decides whether the declarative
+gap is a wording fix or a release blocker — until it runs, read every statement
+about `max-file`'s failure mode here as a claim rather than a finding.
 
 ### Images and builds
 

@@ -465,7 +465,9 @@ probe_g0_2() {
 
 # The branch asserts three mutually exclusive behaviours for this flag
 # (engine.sh:130 "not max-file", CONTAINER-ENGINES.md:124 "rejects",
-# CONTAINER-ENGINES.md:372 "ignored"). If it is rejected, `docker compose up`
+# CONTAINER-ENGINES.md:380 "rotate by size only" i.e. ignored, and
+# operator-guide.md:36 "truncated rather than rolled"). If it is rejected,
+# `docker compose up`
 # fails at container creation for the orchestrator, the console and the public
 # probe -- the three most important Compose-managed containers -- and A4 stops
 # being a doc fix.
