@@ -374,8 +374,10 @@ size only, not by file count.
 **cAdvisor's `--docker_only` and the metrics label set are unverified.** The
 metrics stack's netns and storage directories are parameterised, but whether
 cAdvisor emits the same label set against Podman's layout — and therefore
-whether `runtime/metrics/rules/containers.yml` matches — cannot be established
-without a Podman host. Expect to adjust the recording rules.
+whether `runtime/metrics/rules/containers.yml` matches — still takes a Podman
+host to establish. There is now a repeatable way to establish it (`G0-3` in
+section 7); the answer itself is not yet recorded. Expect to adjust the
+recording rules.
 
 **Rootless Podman is not supported.** The stack publishes privileged ports and
 bind-mounts host paths across containers. Nothing here is written against
@@ -388,7 +390,8 @@ stub standing in for the engine
 (`tests/lib/fake-engine.sh`). That catches a call site that grew its own answer.
 It cannot catch an assumption about Podman that is simply wrong — the class of
 bug the two items above belong to. First deployment on a real Podman host is
-still the first real test.
+still the first real test, which is what the gate in section 7 exists to make
+auditable rather than anecdotal.
 
 **Container CPU is reported as `N/A`.** Not a defect to be fixed later; see
 section 4. The figure the compat API offers is wrong rather than approximate,
@@ -397,7 +400,90 @@ Docker SDK dependency the repo deliberately lacks.
 
 ---
 
-## 7. Considered and rejected: one Podman pod for the whole stack
+## 7. The on-host gate: what only a real Podman host can answer
+
+Most of what section 4 records was established from Podman's own documentation
+or from the fake-engine tests that run both legs in CI. A dozen claims could
+not be. They need an enforcing AlmaLinux host with real containers on it:
+whether the host remaps user namespaces under the stack, whether SELinux lets
+the privileged helpers through, what the compat endpoint does with a flag it
+does not support. That checklist has been written twice and run zero times, and
+an unrecorded answer is one nobody can audit — so the claims outlived two plans
+unverified.
+
+`tests/podman-host-gate.sh` is that checklist as one script. Twelve probes —
+five decision gates (`G0-1`…`G0-5`), each of which branches a piece of work,
+and seven premise probes (`P1`…`P7`), each confirming something a piece of work
+already assumes — run in a fixed order and print a Markdown transcript on
+stdout, ready to paste into the PR body. Progress, warnings and harness errors
+go to stderr, so the redirect stays paste-able:
+
+```sh
+sudo tests/podman-host-gate.sh > gate.md              # all twelve
+sudo tests/podman-host-gate.sh --only G0-5,P3 > gate.md
+```
+
+`--only` narrows the run; the selected probes still execute in the harness's
+own order, never the order they were typed. Every command's combined output is
+reproduced verbatim with its exit status, because the point of the exercise is
+the evidence, not the conclusion.
+
+### What it costs
+
+Run it on a **disposable VM**, not on a host with anything worth keeping.
+
+- **It needs root.** `ausearch` and `systemctl` are not otherwise available.
+  The harness never calls `sudo` itself; where it cannot read, it reports
+  `INCONCLUSIVE` instead of guessing.
+- **It restarts `podman.socket`** — G0-2 checks that `SocketGroup` and
+  `SocketMode=0660` from the drop-in (section 5) survive a restart — which
+  drops every client on the socket.
+- **P5 destroys a running game server.** Timing `docker rm -f` requires a real
+  one; there is no way to measure the teardown without performing it.
+- **P3 mutates a running container's memory limits**, then restores the values
+  it recorded first, whatever the outcome.
+
+It is a post-install gate, not an installer: it never brings the stack up.
+Probes whose subject is absent say so and say what to start.
+
+### Reading the transcript
+
+One section per probe, ending in exactly one verdict, in one of three tokens:
+
+- `ANSWERED` — decisive. The text names the consequence.
+- `BLOCKER` — decisive, and the answer blocks the release.
+- `INCONCLUSIVE` — the probe could not run. The text names what was missing and
+  what to do about it.
+
+A probe whose precondition was absent is never `ANSWERED`; nothing here passes
+vacuously, which is the whole reason to run a script rather than a person.
+Exit status: `0` when every selected probe answered, `1` on any blocker
+(which outranks an inconclusive), `2` when nothing blocked but something was
+inconclusive, `64` for a usage error.
+
+### The twelve probes
+
+| Probe | Question | The answer decides |
+| --- | --- | --- |
+| `G0-5` | Does this host's `containers.conf` remap user namespaces? | Whether the game servers' save-tree bind mount needs `--userns=host` pinned in the spawn argv, or only a documented line and a `dune doctor` warning. It runs first: the failure is silent and data-shaped, and it wants a host nothing has written to yet |
+| `G0-2` | Does the stack come up with SELinux enforcing and no `container_t` AVCs? | Whether the SELinux work is complete as specified. Folds in the privileged host-systemd helper end to end, `dune-net` name resolution from a container, and the socket drop-in surviving a restart — all of which want the same host in the same state. It runs second because it changes host configuration everything after it runs against |
+| `G0-1` | Does Podman reject `--log-opt max-file`, or ignore it? | Whether the declarative-logging gap in section 6 is three sentences of documentation or a Compose overlay threaded through roughly fifteen call sites. If it rejects, `docker compose up` fails at container creation for the orchestrator, the console and the public probe, and the gap is release-blocking |
+| `G0-3` | Does cAdvisor emit `dune-*` container names under `--docker_only=true`? | Whether the flag has to be parameterised, or whether the honest answer is that 4 of 22 alerts go dark on Podman |
+| `G0-4` | Is a game container's cgroup namespace actually private (`0::/`)? | Whether `--cgroupns=private` took, or the memory balancer is reading host-wide figures for a container that looks fine |
+| `P1` | Does the compat layer drop Docker's leading slash in container names? | Confirms the premise under section 4's "name filters do not match" and under the shipped `stop-postgres-container.sh` fix. If the slash is kept, that fix is the regression |
+| `P2` | Does `builder prune` exist on current Podman, natively or through the compat endpoint? | Whether this document's and `storage.sh`'s claim that it does not exist still holds, or one of them has to stop asserting something false |
+| `P3` | Does `docker update --memory` on the compat endpoint move the value, or only exit 0? | Whether the Console's memory balancer is a silent no-op that reports success and changes nothing |
+| `P4` | Which field names and units does `docker stats --format '{{json .}}'` emit? | Whether the five fields the Console and `manager.sh` read are all present. Both JS consumers degrade to an empty table rather than erroring, so a renamed field is invisible in production |
+| `P5` | How long does `docker rm -f` take on a running game server? | How many servers fit inside `shutdown-protection.service`'s `TimeoutStopSec=240`. Podman has at points honoured the stop timeout first, which diverges in the safe direction but not for free |
+| `P6` | Is a `-p 127.0.0.1:…` publish reachable from the host netns under rootful Podman? | Whether `resolve_rmq_game_host()`'s loopback probe can succeed at all. If it cannot, every host-network game server takes the resolver's silent fallback permanently and nothing reports it |
+| `P7` | Does a short image name resolve with `short-name-mode = enforcing`? | Whether unprefixed image references in input positions are safe because lookup resolves, or the registry prefix is needed at every image reference in the repo and not only the ones that already carry it |
+
+The harness's own header is the authoritative account of what each probe runs
+and how its output is classified; the table above is the map, not the contract.
+
+---
+
+## 8. Considered and rejected: one Podman pod for the whole stack
 
 Podman pods give a set of containers one shared network namespace and one
 lifecycle. The recurring proposal is to put every container in this stack —
