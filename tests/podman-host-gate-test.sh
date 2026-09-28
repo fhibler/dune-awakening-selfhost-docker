@@ -101,7 +101,7 @@ for needed in bash env grep sed awk mktemp date hostname uname git; do
     failures=$((failures + 1))
   fi
 done
-for gone in docker podman getenforce ausearch curl; do
+for gone in docker podman getenforce ausearch; do
   if [ -e "$BARE_PATH/$gone" ]; then
     echo "FAIL: the cut-down PATH still offers $gone; vacuity would not be tested" >&2
     failures=$((failures + 1))
@@ -196,17 +196,14 @@ exec $REAL_STAT "\$@"
 STUB
 }
 
-# `curl` is G0-3's only window on cAdvisor: one reachability probe that wants
-# an HTTP code, then two scrapes of the metric text.
-stub_curl_metrics() {
-  stub "$STUB_BIN/curl" <<STUB
-#!/usr/bin/env bash
-case "\$*" in
-  *-w*) printf '200\n' ;;
-  *) printf '%s\n' '$1' ;;
-esac
-exit 0
-STUB
+# cAdvisor publishes no host port, so G0-3 scrapes it from a BusyBox on
+# `dune-net`. All three of its calls -- the reachability probe and the two
+# scrapes -- are the same `docker run`, so one scripted response serves them
+# and the probe's own pipelines do the rest. Requires use_fake_engine.
+stub_cadvisor_scrape() {
+  fake_engine_respond "run --rm --network" <<OUT
+$1
+OUT
 }
 
 # Run the shipped harness inside the current fixture. stdout is captured on its
@@ -419,8 +416,8 @@ check "…and prints nothing on stdout" "" "$GATE_OUT"
 new_fixture
 stub_podman
 metrics_stack_exits 0
-stub_curl_metrics 'container_cpu_usage_seconds_total{name="dune-postgres"} 4.2'
 use_fake_engine
+stub_cadvisor_scrape 'container_cpu_usage_seconds_total{name="dune-postgres"} 4.2'
 fake_engine_respond "ps --format {{.Names}}" <<'OUT'
 dune-server-gateway
 dune-postgres
@@ -459,8 +456,8 @@ fake_engine_stop
 new_fixture
 stub_podman
 metrics_stack_exits 0
-stub_curl_metrics 'container_cpu_usage_seconds_total{name="paperless-web"} 4.2'
 use_fake_engine
+stub_cadvisor_scrape 'container_cpu_usage_seconds_total{name="paperless-web"} 4.2'
 fake_engine_respond "ps --format {{.Names}}" <<'OUT'
 pterodactyl-panel
 paperless-web

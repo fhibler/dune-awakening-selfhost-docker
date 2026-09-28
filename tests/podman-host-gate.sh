@@ -525,7 +525,14 @@ YML
 # the failure mode is an empty metric set rather than an error: Prometheus
 # scrapes happily, and four of the twenty-two alerts simply never fire.
 probe_g0_3() {
-  local names
+  local names scrape
+
+  # cAdvisor publishes no host port: docker-compose.metrics.yml puts it on
+  # `dune-net` and Prometheus reaches it at dune-cadvisor:8080. The scrape has
+  # to come from that network, so it goes through a throwaway BusyBox attached
+  # to it. Asking localhost:8080 would fail on Docker too, and a check that
+  # cannot pass on either engine answers nothing.
+  scrape="docker run --rm --network dune-net docker.io/library/busybox:1.37 wget -qO- http://dune-cadvisor:8080/metrics"
 
   if [ ! -x runtime/scripts/metrics-stack.sh ]; then
     verdict INCONCLUSIVE "runtime/scripts/metrics-stack.sh is not executable here, so the metrics stack cannot be brought up"
@@ -545,11 +552,11 @@ probe_g0_3() {
   settle 60
 
   # Reachability is asked separately because the two pipelines below swallow
-  # curl's exit status, and "cAdvisor reports nothing" and "nothing is
-  # listening on 8080" are different answers.
-  run curl -sS -o /dev/null -w '%{http_code}\n' http://localhost:8080/metrics
-  if [ "$RUN_STATUS" -ne 0 ] || [ "$RUN_OUT" != "200" ]; then
-    verdict INCONCLUSIVE "cAdvisor's /metrics is not reachable on localhost:8080 (HTTP '${RUN_OUT:-none}', exit=$RUN_STATUS); the scrape wait may be too short, or the container may have exited"
+  # wget's exit status, and "cAdvisor reports nothing" and "cAdvisor cannot be
+  # reached" are different answers.
+  run_shell "$scrape >/dev/null"
+  if [ "$RUN_STATUS" -ne 0 ]; then
+    verdict INCONCLUSIVE "cAdvisor's /metrics is not reachable on \`dune-net\` at dune-cadvisor:8080 (exit=$RUN_STATUS); the scrape wait may be too short, the container may have exited, or the BusyBox helper image could not be pulled"
     return 0
   fi
 
@@ -562,10 +569,15 @@ probe_g0_3() {
     return 0
   fi
 
-  run_shell "curl -s localhost:8080/metrics | grep -c '^container_cpu_usage_seconds_total'"
-  run_shell "curl -s localhost:8080/metrics | grep -o 'name=\"dune-[a-z-]*\"' | sort -u"
+  run_shell "$scrape | grep -c '^container_cpu_usage_seconds_total'"
+  run_shell "$scrape | grep -o 'name=\"dune-[a-z-]*\"' | sort -u"
   names="$RUN_OUT"
-  run_shell "docker logs dune-cadvisor 2>&1 | tail -30"
+  # Only the factory lines, because they carry the whole explanation: cAdvisor
+  # registers a Docker factory and a Podman factory, and `--docker_only` keeps
+  # the first. A plain tail would bury that under cAdvisor's `Machine:` dump,
+  # which is one line several hundred kilobytes wide and would make the
+  # transcript unpasteable.
+  run_shell "docker logs dune-cadvisor 2>&1 | grep -E 'factory|plugin\.go|Starting cAdvisor' | tail -20"
 
   if printf '%s\n' "$names" | grep -q 'name="dune-'; then
     verdict ANSWERED "C9 not needed: cAdvisor names the stack's containers under \`--docker_only=true\`"
