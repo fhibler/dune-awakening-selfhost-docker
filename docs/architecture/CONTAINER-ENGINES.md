@@ -121,7 +121,7 @@ behave exactly as it does today.**
 | `DUNE_ENGINE_RESTART_POLICY` | `unless-stopped` | `always` | `podman-restart.service` only revives `always` containers |
 | `DUNE_ENGINE_SYSTEMD_UNIT` | `docker.service` | `podman.socket` | there is no `docker.service` on a Podman host |
 | `DUNE_ENGINE_MOUNT_SUFFIX` | *(empty)* | `z` | SELinux relabelling, shared rather than private |
-| `DUNE_ENGINE_SUPPORTS_LOG_MAX_FILE` | `1` | `0` | Podman's `json-file` driver rejects `max-file` |
+| `DUNE_ENGINE_SUPPORTS_LOG_MAX_FILE` | `1` | `0` | Podman's `json-file` driver accepts `max-file` and ignores it (`G0-1`) |
 | `DUNE_ENGINE_IMAGE_PREFIX` | *(empty)* | `localhost/` | locally built images normalise with the prefix |
 | `DUNE_ENGINE_SUPPORTS_BUILDER_PRUNE` | `1` | `0` | no `builder prune`, and no compat endpoint for it |
 
@@ -219,13 +219,18 @@ Podman's `json-file` driver accepts `max-size` but does not support
 `max-file`. The imperative half reads `DUNE_ENGINE_SUPPORTS_LOG_MAX_FILE` and
 simply omits the flag. The declarative half is an open gap; see section 6.
 
-Which way the unsupported flag fails is not yet established, and the repo
-currently describes it three ways: rejected at container creation (this
-document), accepted and ignored (section 6), and the log truncated rather than
-rolled (the operator guide). At most one of those is true. `G0-1` in section 7
-is the probe that settles it, and the answer decides whether the declarative
-gap is a wording fix or a release blocker — until it runs, read every statement
-about `max-file`'s failure mode here as a claim rather than a finding.
+**How it fails is settled: it does not.** `G0-1` ran on an enforcing AlmaLinux
+10.2 host against Podman 5.8.2 through the compat socket, and `max-file` was
+accepted and ignored — both `docker run --log-opt max-file=3` and the same
+option through `docker compose up` exited 0 and created the container. The flag
+is a no-op, not a rejection.
+
+That decides the declarative gap in section 6: it is a wording fix, not a
+release blocker, because a Compose file carrying `max-file` still starts. The
+one statement `G0-1` disproves is the claim that the driver *rejects* the
+option, corrected in section 4's table above. What the log then does — the
+operator guide's "truncated rather than rolled" — is a separate claim about
+rotation behaviour that `G0-1` did not measure and that nothing here has.
 
 ### Images and builds
 
@@ -415,9 +420,10 @@ or from the fake-engine tests that run both legs in CI. A dozen claims could
 not be. They need an enforcing AlmaLinux host with real containers on it:
 whether the host remaps user namespaces under the stack, whether SELinux lets
 the privileged helpers through, what the compat endpoint does with a flag it
-does not support. That checklist has been written twice and run zero times, and
-an unrecorded answer is one nobody can audit — so the claims outlived two plans
-unverified.
+does not support. That checklist was written twice and run zero times, and an
+unrecorded answer is one nobody can audit — so the claims outlived two plans
+unverified. Seven of the twelve have since been run; see "What it has answered"
+below.
 
 `tests/podman-host-gate.sh` is that checklist as one script. Twelve probes —
 five decision gates (`G0-1`…`G0-5`), each of which branches a piece of work,
@@ -488,6 +494,30 @@ inconclusive, `64` for a usage error.
 
 The harness's own header is the authoritative account of what each probe runs
 and how its output is classified; the table above is the map, not the contract.
+
+### What it has answered
+
+Run 2026-09-28 on an enforcing AlmaLinux 10.2 host — Podman 5.8.2, cgroup v2,
+the stack installed and up with three game servers — through the pinned Docker
+CLI 27.5.1 and Compose 2.29.7 against the compat socket, which is the
+configuration this document describes. Seven probes, seven `ANSWERED`, no
+blockers:
+
+| Probe | Answer | Consequence |
+| --- | --- | --- |
+| `G0-5` | No remapping: no `userns` setting anywhere, `UsernsMode` empty, save trees owned by host uids | `A5` branch (a) — a documented line and a `dune doctor` warning, no argv change |
+| `G0-1` | `max-file` is accepted and ignored, direct and through Compose, both exit 0 | `A4` branch (a) — a wording fix, not a Compose overlay, and not release-blocking |
+| `G0-4` | The gateway's cgroup namespace is private (`0::/`) | `C13` is not needed; the memory balancer reads that container's own figures |
+| `P1` | The slash-less filter matches; the slashed spelling matches too | `C3`'s premise holds and its change is safe either way |
+| `P4` | `CPUPerc`, `MemUsage`, `NetIO`, `BlockIO` and `Name` are all present, across 30 containers | `E7`'s premise holds; neither JS consumer is reading a renamed field |
+| `P6` | A `127.0.0.1:<port>` publish is reachable from the host netns | `resolve_rmq_game_host`'s loopback branch works; no permanent silent fallback |
+| `P7` | A short name resolves under `short-name-mode = enforcing` | `D`'s simplification holds; the unprefixed input positions are safe |
+
+Five remain open because they change the host they run on, and the host
+available was not disposable: `G0-2` restarts `podman.socket` under a live
+orchestrator, `P5` destroys a running game server, `P3` mutates a running
+container's memory limits, `P2` prunes the build cache, and `G0-3` starts the
+metrics stack. They need the VM that "What it costs" asks for.
 
 ---
 
