@@ -174,11 +174,12 @@ cleanup_storage() {
     if [ "$DUNE_ENGINE_SUPPORTS_BUILDER_PRUNE" = "1" ]; then
       prune_cmd=(docker builder prune --force --all)
     else
-      # The only divergence in this repo where the Docker dialect has no
-      # equivalent at all: there is no `podman builder prune`, and the compat
-      # API does not implement /build/prune, so the Docker CLI cannot reach
-      # Podman's build cache however it is pointed. Buildah's store is where
-      # the cache lives and this is the command that clears it.
+      # The one divergence where the Docker dialect cannot reach the thing at
+      # all. `podman builder prune` does exist (`P2`) -- it is an alias of
+      # `podman image prune` -- but the compat API does not implement
+      # /build/prune, so `docker builder prune` through the socket answers
+      # `Not Found` however the CLI is pointed. The native command is the only
+      # way in, and Buildah's store is where the cache actually lives.
       prune_cmd=(podman system prune --build --force)
     fi
     if [ "$dry_run" = "1" ]; then

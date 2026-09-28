@@ -123,7 +123,7 @@ behave exactly as it does today.**
 | `DUNE_ENGINE_MOUNT_SUFFIX` | *(empty)* | `z` | SELinux relabelling, shared rather than private |
 | `DUNE_ENGINE_SUPPORTS_LOG_MAX_FILE` | `1` | `0` | Podman's `json-file` driver accepts `max-file` and ignores it (`G0-1`) |
 | `DUNE_ENGINE_IMAGE_PREFIX` | *(empty)* | `localhost/` | locally built images normalise with the prefix |
-| `DUNE_ENGINE_SUPPORTS_BUILDER_PRUNE` | `1` | `0` | no `builder prune`, and no compat endpoint for it |
+| `DUNE_ENGINE_SUPPORTS_BUILDER_PRUNE` | `1` | `0` | the compat API has no `/build/prune`, so the Docker spelling cannot reach it (`P2`) |
 
 Helpers: `dune_engine_mount SRC DEST [OPTS]` builds a whole `-v` value with the
 relabel appended last; `dune_engine_label_disable_args` yields
@@ -248,9 +248,12 @@ depending on the host it may fail outright, prompt (impossible in a script), or
 resolve to a *different* image from a higher-priority registry. Every `FROM` in
 the repo names `docker.io/library/…` explicitly.
 
-**`docker builder prune` does not exist**, and `podman system df` has no
-`Build Cache` row. `dune doctor` reports the figure only where there is one to
-report, rather than printing a vacuous zero.
+**`docker builder prune` cannot reach Podman's build cache.** `P2` confirmed
+the compat API answers `Not Found`, so the Docker spelling is unusable however
+the CLI is pointed — while `podman builder prune` itself does exist, as an alias
+of `podman image prune`. `storage.sh` therefore drops to the native command.
+`podman system df` also has no `Build Cache` row, so `dune doctor` reports the
+figure only where there is one to report, rather than printing a vacuous zero.
 
 ### Networking
 
@@ -384,13 +387,21 @@ made conditional in the Compose files. Solving it needs a
 The consequence today is that Compose-managed containers on Podman rotate by
 size only, not by file count.
 
-**cAdvisor's `--docker_only` and the metrics label set are unverified.** The
-metrics stack's netns and storage directories are parameterised, but whether
-cAdvisor emits the same label set against Podman's layout — and therefore
-whether `runtime/metrics/rules/containers.yml` matches — still takes a Podman
-host to establish. There is now a repeatable way to establish it (`G0-3` in
-section 7); the answer itself is not yet recorded. Expect to adjust the
-recording rules.
+**cAdvisor reports nothing per-container under `--docker_only=true`.** `G0-3`
+has since settled this (section 7), and the answer is worse than a label-set
+mismatch: on Podman, cAdvisor emits no per-container series at all. The only
+`container_cpu_usage_seconds_total` sample is the root cgroup, `id="/"`, with
+no `name` label anywhere in the scrape. Its log shows why — it registers a
+Docker factory *and* a Podman factory, and `--docker_only` keeps the first,
+while Podman's containers belong to the second.
+
+So `runtime/metrics/rules/containers.yml` does not mismatch; it has nothing to
+match against, and the four alerts that read `container_*` series go dark
+silently, because Prometheus scrapes a healthy endpoint that simply omits them.
+`C9` is therefore required: `--docker_only` has to become a parameter that the
+Podman path sets to `false`. Expect to re-check the label set once it does —
+dropping the flag is what finally exposes whether Podman's labels match the
+recording rules, and that question is still open.
 
 **Rootless Podman is not supported.** The stack publishes privileged ports and
 bind-mounts host paths across containers. Nothing here is written against
@@ -422,7 +433,7 @@ whether the host remaps user namespaces under the stack, whether SELinux lets
 the privileged helpers through, what the compat endpoint does with a flag it
 does not support. That checklist was written twice and run zero times, and an
 unrecorded answer is one nobody can audit — so the claims outlived two plans
-unverified. Seven of the twelve have since been run; see "What it has answered"
+unverified. Ten of the twelve have since been run; see "What it has answered"
 below.
 
 `tests/podman-host-gate.sh` is that checklist as one script. Twelve probes —
@@ -497,10 +508,12 @@ and how its output is classified; the table above is the map, not the contract.
 
 ### What it has answered
 
-Run 2026-09-28 on an enforcing AlmaLinux 10.2 host — Podman 5.8.2, cgroup v2,
-the stack installed and up with three game servers — through the pinned Docker
-CLI 27.5.1 and Compose 2.29.7 against the compat socket, which is the
-configuration this document describes. Seven probes, seven `ANSWERED`, no
+Run 2026-09-28 across two AlmaLinux 10.2 hosts, both Podman 5.8.2 with cgroup
+v2, both driven through the pinned Docker CLI 27.5.1 and Compose 2.29.7 against
+the compat socket, which is the configuration this document describes. The
+first seven ran on an enforcing host with the stack installed and up with three
+game servers; `G0-3`, `P2` and `P3` ran on an idle SELinux-permissive host with
+no stack, which is why they are marked. Ten probes, ten `ANSWERED`, no
 blockers:
 
 | Probe | Answer | Consequence |
@@ -512,12 +525,25 @@ blockers:
 | `P4` | `CPUPerc`, `MemUsage`, `NetIO`, `BlockIO` and `Name` are all present, across 30 containers | `E7`'s premise holds; neither JS consumer is reading a renamed field |
 | `P6` | A `127.0.0.1:<port>` publish is reachable from the host netns | `resolve_rmq_game_host`'s loopback branch works; no permanent silent fallback |
 | `P7` | A short name resolves under `short-name-mode = enforcing` | `D`'s simplification holds; the unprefixed input positions are safe |
+| `G0-3` † | cAdvisor names no container at all under `--docker_only=true`; the only `container_cpu_usage_seconds_total` sample is the root cgroup `id="/"` | `C9` **is required** — `--docker_only` must be parameterised, or 4 of 22 alerts go dark |
+| `P2` † | `podman builder prune` exists; the compat `docker builder prune` fails with `Not Found` (exit 1) | `B2` is right; `storage.sh:177-181`'s comment must stop claiming the subcommand is absent |
+| `P3` † | `docker update --memory/--memory-swap/--memory-reservation` moved a live container's limits from `0 0 0` to the requested values | The memory balancer's live path (`memory.sh:342`, `memory-swap.sh:96`) holds on the compat endpoint |
 
-Five remain open because they change the host they run on, and the host
-available was not disposable: `G0-2` restarts `podman.socket` under a live
-orchestrator, `P5` destroys a running game server, `P3` mutates a running
-container's memory limits, `P2` prunes the build cache, and `G0-3` starts the
-metrics stack. They need the VM that "What it costs" asks for.
+† on the permissive host without the stack. Neither bears on SELinux: `P2` and
+`P3` exercise the compat API, and `G0-3`'s answer is a cAdvisor factory
+question. `G0-3` is nonetheless worth one confirming run on an enforcing host
+with game servers up, because its subjects there were the metrics containers
+themselves rather than a full stack.
+
+`G0-3`'s answer has a cause, not just a correlation: cAdvisor's own log shows it
+registering **both** a Docker factory and a Podman factory, and `--docker_only`
+keeps only the first. Podman's containers belong to the other one.
+
+Two remain open, and both need the stack installed on a host that may be
+damaged: `G0-2` restarts `podman.socket` under a live orchestrator and asserts
+against the Console and `dune-postgres`, and `P5` destroys a running game
+server to time `docker rm -f`. `G0-2` additionally needs SELinux enforcing.
+They need the VM that "What it costs" asks for.
 
 ---
 
