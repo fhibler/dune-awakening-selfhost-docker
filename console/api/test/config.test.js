@@ -10,6 +10,23 @@ import { fileURLToPath } from "node:url";
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 import { loadConfig, publicConfig, readConsoleBuildId, resolvePorts } from "../src/config.js";
 
+// loadConfig() generates the admin password and session secret when they are
+// absent and persists them under `<repoRoot>/runtime/secrets`, and repoRoot
+// falls back to the process's own working directory. A test that calls it
+// without pointing DUNE_DOCKER_DIR at something disposable therefore writes
+// generated credentials into console/api/ in the checkout, where nothing
+// ignores them and the next `git add -A` picks them up.
+function disposableRepoRoot() {
+  const repoRoot = mkdtempSync(join(tmpdir(), "arrakis-config-root-"));
+  const previous = process.env.DUNE_DOCKER_DIR;
+  process.env.DUNE_DOCKER_DIR = repoRoot;
+  return () => {
+    if (previous === undefined) delete process.env.DUNE_DOCKER_DIR;
+    else process.env.DUNE_DOCKER_DIR = previous;
+    rmSync(repoRoot, { recursive: true, force: true });
+  };
+}
+
 test("frontend build ID changes when the built entry file changes", () => {
   const staticDir = mkdtempSync(join(tmpdir(), "arrakis-build-id-"));
   try {
@@ -415,6 +432,7 @@ test("resolvePorts() accepts a Port/IGWPort base whose +33 partition range exact
 // disk, so a value that silently disables it is worse than a wrong one.
 test("the upload cap survives a non-numeric ADMIN_MAX_UPLOAD_BYTES", () => {
   const previous = process.env.ADMIN_MAX_UPLOAD_BYTES;
+  const releaseRepoRoot = disposableRepoRoot();
   try {
     process.env.ADMIN_MAX_UPLOAD_BYTES = "1GB";
     // Number("1GB") is NaN, and `received > NaN` is false for every size, so
@@ -425,11 +443,13 @@ test("the upload cap survives a non-numeric ADMIN_MAX_UPLOAD_BYTES", () => {
   } finally {
     if (previous === undefined) delete process.env.ADMIN_MAX_UPLOAD_BYTES;
     else process.env.ADMIN_MAX_UPLOAD_BYTES = previous;
+    releaseRepoRoot();
   }
 });
 
 test("the upload cap is held inside sane bounds", () => {
   const previous = process.env.ADMIN_MAX_UPLOAD_BYTES;
+  const releaseRepoRoot = disposableRepoRoot();
   try {
     process.env.ADMIN_MAX_UPLOAD_BYTES = "0";
     assert.equal(loadConfig().maxUploadBytes, 1024 * 1024);
@@ -438,6 +458,7 @@ test("the upload cap is held inside sane bounds", () => {
   } finally {
     if (previous === undefined) delete process.env.ADMIN_MAX_UPLOAD_BYTES;
     else process.env.ADMIN_MAX_UPLOAD_BYTES = previous;
+    releaseRepoRoot();
   }
 });
 
@@ -446,6 +467,7 @@ test("the upload cap is held inside sane bounds", () => {
 // into a permanent authorization to overwrite the host.
 test("the restore preview window survives a non-numeric ADMIN_RESTORE_PREVIEW_TTL_MS", () => {
   const previous = process.env.ADMIN_RESTORE_PREVIEW_TTL_MS;
+  const releaseRepoRoot = disposableRepoRoot();
   try {
     process.env.ADMIN_RESTORE_PREVIEW_TTL_MS = "15 minutes";
     assert.equal(loadConfig().restorePreviewTtlMs, 15 * 60 * 1000);
@@ -454,11 +476,13 @@ test("the restore preview window survives a non-numeric ADMIN_RESTORE_PREVIEW_TT
   } finally {
     if (previous === undefined) delete process.env.ADMIN_RESTORE_PREVIEW_TTL_MS;
     else process.env.ADMIN_RESTORE_PREVIEW_TTL_MS = previous;
+    releaseRepoRoot();
   }
 });
 
 test("the restore preview window is held inside sane bounds", () => {
   const previous = process.env.ADMIN_RESTORE_PREVIEW_TTL_MS;
+  const releaseRepoRoot = disposableRepoRoot();
   try {
     // Zero would refuse every apply the instant its preview finished.
     process.env.ADMIN_RESTORE_PREVIEW_TTL_MS = "0";
@@ -471,6 +495,7 @@ test("the restore preview window is held inside sane bounds", () => {
   } finally {
     if (previous === undefined) delete process.env.ADMIN_RESTORE_PREVIEW_TTL_MS;
     else process.env.ADMIN_RESTORE_PREVIEW_TTL_MS = previous;
+    releaseRepoRoot();
   }
 });
 
