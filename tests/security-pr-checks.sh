@@ -56,6 +56,8 @@ if command -v shellcheck >/dev/null 2>&1; then
     runtime/scripts/metrics-status.sh \
     tests/metrics-stack-unit.sh \
     tests/security-pr-checks.sh \
+    tests/podman-host-gate.sh \
+    tests/podman-host-gate-test.sh \
     runtime/scripts/lib/secrets.sh \
     runtime/scripts/secrets-cli.sh \
     runtime/tests/test-secrets-lib.sh \

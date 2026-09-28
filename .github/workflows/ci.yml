@@ -189,6 +189,7 @@ jobs:
           tests/storage-cleanup-podman-test.sh
           tests/dune-compose-service-reuse-test.sh
           tests/engine-host-facts-test.sh
+          tests/podman-host-gate-test.sh
       - name: Test age-based secrets library (AEAD primitive, shell seam, cross-language round-trip)
         run: |
           python3 runtime/scripts/lib/test_secrets_aead.py -v
