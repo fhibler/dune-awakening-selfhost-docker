@@ -554,6 +554,16 @@ configure_podman_socket() {
 # default. The stale socket inode survives, nothing holds it -- \`ss -lx\` shows
 # no listener and \`fuser\` no opener -- and the next bind() still refuses it.
 #
+# ExecStartPre clears the path anyway, because RemoveOnStop alone still loses a
+# race: podman.service is socket-activated and \`Type=exec\`/\`KillMode=process\`,
+# so while a client is actively polling the API -- dune-autoscaler does, every
+# few seconds -- it can still hold the inherited listening fd at the moment the
+# socket unit rebinds. The removal is then skipped and the start fails. Once it
+# fails the unit is \`failed\` with the file orphaned, and every later start
+# fails too, so the race is not self-correcting: it takes the host's compat API
+# out until someone rm's the file by hand. Clearing the path unconditionally on
+# start is what makes a restart survive live traffic.
+#
 # ListenStream= names /run/docker.sock rather than the /var/run/ alias every
 # bind mount in this repo spells. They are the same file (/var/run is a symlink
 # to /run), but systemd rewrites a listen path "below legacy directory
@@ -566,6 +576,7 @@ ListenStream=/run/docker.sock
 SocketGroup=${ENGINE_SOCKET_GROUP}
 SocketMode=0660
 RemoveOnStop=yes
+ExecStartPre=-/usr/bin/rm -f /run/docker.sock
 EOF
 )"
 

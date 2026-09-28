@@ -276,6 +276,12 @@ else
       fi
       grep -Fqx 'RemoveOnStop=yes' "$dropin" \
         || fail "the drop-in does not set RemoveOnStop=yes, so the stale socket inode survives a stop and the next start cannot bind it"
+      # RemoveOnStop alone still loses a race against a client that is actively
+      # polling the API: podman.service can hold the inherited listening fd as
+      # the socket rebinds, the removal is skipped, and the start fails. A
+      # failed start orphans the file, after which every start fails.
+      grep -Fqx 'ExecStartPre=-/usr/bin/rm -f /run/docker.sock' "$dropin" \
+        || fail "the drop-in does not clear a stale socket before binding, so a restart under live API traffic can strand the host with no compat socket"
       [ "$(grep -c '^ListenStream=' "$dropin")" -eq 2 ] \
         || fail "the drop-in does not leave exactly one listening socket"
       grep -Fqx 'SocketGroup=podman' "$dropin" \
